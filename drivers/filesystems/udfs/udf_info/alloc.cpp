@@ -581,16 +581,23 @@ UDFFindMinSuitableExtent(
 
             // Convert to absolute LBN
             ULONG runStartLbn = runStartIndex + pageStart;
+            ULONG pageEndLbn = min(pageStart + pageBits, (ULONG)lbnLim);
+
+            // The pinned bitmap is larger than the requested search range.
+            // Do not let a run extend past that range.
+            if (runStartLbn >= pageEndLbn)
+                runLen = 0;
+            else if (runLen > pageEndLbn - runStartLbn)
+                runLen = pageEndLbn - runStartLbn;
 
             if (CurrentRunLength != 0) {
                 // We have an active run — check if this extends it
                 if (runLen == 0 || runStartLbn != CurrentLbn) {
                     // Active run ended — evaluate it
                     if (CurrentRunLength >= Length) {
-                        if (!best_len || (best_len > CurrentRunLength)) {
-                            best_lba = CurrentRunStart;
-                            best_len = CurrentRunLength;
-                        }
+                        best_lba = CurrentRunStart;
+                        best_len = CurrentRunLength;
+                        break;
                     } else if (max_len < CurrentRunLength) {
                         max_lba = CurrentRunStart;
                         max_len = CurrentRunLength;
@@ -613,7 +620,7 @@ UDFFindMinSuitableExtent(
             }
 
             // Check early exit
-            if (best_len == Length) break;
+            if (best_len) break;
 
             // Advance to next position
             if (runLen == 0) {
@@ -639,31 +646,45 @@ UDFFindMinSuitableExtent(
             }
         }
     } else {
-    // Legacy in-memory bitmap path
-    while(i<lbnLim) {
-        ASSERT(i <= lbnLim);
-        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, lbnLim);
-        if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
-            // free extent found
-            if (len >= Length) {
-                // minimize extent length
-                if (!best_len || (best_len > len)) {
-                    best_lba = i;
-                    best_len = len;
-                }
-                if (len == Length)
-                    break;
-            } else {
-                // remember max extent
-                if (max_len < len) {
-                    max_lba = i;
-                    max_len = len;
-                }
+        // Use the same RTL bitmap search as FastFAT.  UDF marks free
+        // blocks with set bits, so RtlFindSetBits is the corresponding
+        // operation to FastFAT's RtlFindClearBits.
+        RTL_BITMAP bitmap;
+        RtlInitializeBitMap(&bitmap,
+                            (PULONG)Vcb->FSBM_Bitmap,
+                            Vcb->FSBM_BitCount);
+
+        if (Length <= (SIZE_T)lbnLim - lbnStart) {
+            ULONG exact = RtlFindSetBits(&bitmap, (ULONG)Length, (ULONG)lbnStart);
+            if (exact != MAXULONG && exact + (ULONG)Length <= lbnLim) {
+                best_lba = exact;
+                best_len = Length;
             }
-            if (Vcb->CDR_Mode) break;
         }
-        i += len;
-    }
+
+        while (!best_len && i < lbnLim) {
+            ULONG runStart;
+            ULONG runLen = UDFBitmapFindNextRunSet(&bitmap,
+                                                   (ULONG)i,
+                                                   &runStart);
+
+            if (!runLen || runStart >= lbnLim)
+                break;
+
+            ULONG boundedLen = min(runLen, (ULONG)lbnLim - runStart);
+            if (boundedLen >= Length) {
+                best_lba = runStart;
+                best_len = boundedLen;
+                break;
+            }
+
+            if (boundedLen > max_len) {
+                max_lba = runStart;
+                max_len = boundedLen;
+            }
+
+            i = runStart + boundedLen;
+        }
     } // end legacy path
     UDFUnpinBitmapPage(Vcb);
     if (!best_len && !max_len) {
