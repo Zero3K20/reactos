@@ -1036,6 +1036,7 @@ UDFAllocFreeExtent_(
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
+    uint32 CurrentSearchStart = SearchStart;
 
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
@@ -1054,7 +1055,7 @@ UDFAllocFreeExtent_(
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
-        Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
+        Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, CurrentSearchStart,
                                                                SearchLim, &len, AllocFlags);
 
         if (len >= blen) {
@@ -1081,6 +1082,10 @@ no_free_space_err:
             AdPrint(("  DISK_FULL\n"));
             return STATUS_DISK_FULL;
         }
+        if (len >= SearchLim - Ext.extLocation)
+            CurrentSearchStart = SearchStart;
+        else
+            CurrentSearchStart = Ext.extLocation + len;
         // append the frag found to mapping
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
