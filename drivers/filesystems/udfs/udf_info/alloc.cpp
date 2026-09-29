@@ -222,6 +222,38 @@ UDFIsBitmapBitFree(
 }
 
 /*
+    Check whether every block in [Lbn, Lbn+Len) is still marked free.
+    Used to re-validate an extent found while only holding a *shared*
+    BitMapResource1 lock (legacy in-memory bitmap only, see
+    UDFAllocFreeExtent_), right before it is actually committed under the
+    exclusive lock. This lets concurrent allocators scan the bitmap in
+    parallel (the expensive part of allocation) while still keeping the
+    bitmap mutation itself safely serialized.
+ */
+BOOLEAN
+UDFIsExtentRangeFree(
+    IN PVCB Vcb,
+    IN ULONG Lbn,
+    IN ULONG Len
+    )
+{
+    ULONG j;
+
+    UDF_CHECK_BITMAP_RESOURCE(Vcb);
+
+    if (!Len) return TRUE;
+    if ((Lbn + Len) > Vcb->FSBM_BitCount) return FALSE;
+
+    for(j=0; j<Len; j++) {
+        if (Vcb->BitmapFcb ? !UDFIsBitmapBitFree(Vcb, Lbn+j)
+                            : !UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), Lbn+j)) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+} // end UDFIsExtentRangeFree()
+
+/*
     Count consecutive free (set) bits starting from Start LBN, up to Limit.
     Uses RTL_BITMAP across pinned page boundaries.
  */
@@ -1036,6 +1068,8 @@ UDFAllocFreeExtent_(
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
+    uint32 partRoot;
+    BOOLEAN CanScanConcurrently;
 
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
@@ -1043,43 +1077,75 @@ UDFAllocFreeExtent_(
     blen = (uint32)(((Length+LBS-1) & ~((int64)LBS-1)) >> BSh);
     ExtInfo->Mapping = NULL;
     ExtInfo->Offset = 0;
+    partRoot = Vcb->Partitions[0].PartitionRoot;
 
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+    // The legacy in-memory free-space bitmap (Vcb->FSBM_Bitmap) is a plain
+    // buffer that is only ever mutated while holding BitMapResource1
+    // exclusively, so it is safe to *scan* it under a shared lock, letting
+    // concurrent allocation requests search the bitmap in parallel instead
+    // of all serializing on one exclusive lock for the whole operation
+    // (this is the contention reported for multi-threaded directory
+    // extraction). The paged/cached bitmap (Vcb->BitmapFcb) additionally
+    // keeps a single Vcb-wide "currently pinned page" cache
+    // (BitmapBcb/BitmapRtl/BitmapPageStartLbn) that gets mutated as a side
+    // effect of scanning (see UDFPinBitmapPage); concurrent scanners would
+    // race on that cache and could unpin a page another thread is still
+    // reading (a use-after-free hazard, not just a wrong extent choice), so
+    // for that representation the whole search+commit must stay serialized
+    // under the exclusive lock, exactly as before.
+    CanScanConcurrently = (Vcb->BitmapFcb == NULL);
 
     if (blen > (SearchLim - SearchStart)) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         goto no_free_space_err;
     }
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
-        Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
-                                                               SearchLim, &len, AllocFlags);
+        if (CanScanConcurrently) {
+            // Search phase: shared lock only.
+            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
+            Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
+                                                                   SearchLim, &len, AllocFlags);
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+
+            if (!len) {
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                goto no_free_space_err;
+            }
+
+            // Commit phase: briefly take the exclusive lock just to
+            // re-validate that the extent found above is still free
+            // (another allocator could have grabbed it in between the
+            // shared search and now) before actually marking it used. On a
+            // lost race, simply release and retry the search.
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+            len = min(len, blen);
+            if (!UDFIsExtentRangeFree(Vcb, Ext.extLocation - partRoot, len)) {
+                UDFReleaseResource(&(Vcb->BitMapResource1));
+                continue;
+            }
+        } else {
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+            Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
+                                                                   SearchLim, &len, AllocFlags);
+            if (!len) {
+                goto no_free_space_err;
+            }
+            len = min(len, blen);
+        }
 
         if (len >= blen) {
             // complete search
             Ext.extLength = blen<<BSh;
             blen = 0;
-        } else if (len) {
+        } else {
             // we need still some frags to complete request &
             // probably we have the opportunity to do it
             Ext.extLength = len<<BSh;
             blen -= len;
-        } else {
-no_free_space_err:
-            // no more free space. abort
-            UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
-                blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
-            if (ExtInfo->Mapping) {
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                MyFreePool__(ExtInfo->Mapping);
-                ExtInfo->Mapping = NULL;
-            }
-            UDFReleaseResource(&(Vcb->BitMapResource1));
-            ExtInfo->Length = 0;//UDFGetExtentLength(ExtInfo->Mapping);
-            AdPrint(("  DISK_FULL\n"));
-            return STATUS_DISK_FULL;
         }
         // append the frag found to mapping
         ASSERT(!(Ext.extLength >> 30));
@@ -1092,6 +1158,7 @@ no_free_space_err:
                 UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
                 // roll back
                 blen += Ext.extLength>>BSh;
+                UDFReleaseResource(&(Vcb->BitMapResource1));
                 continue;
             }
         }
@@ -1130,10 +1197,24 @@ no_free_space_err:
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
     return STATUS_SUCCESS;
+
+no_free_space_err:
+    // no more free space. abort
+    UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
+        blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
+    if (ExtInfo->Mapping) {
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
+        MyFreePool__(ExtInfo->Mapping);
+        ExtInfo->Mapping = NULL;
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    ExtInfo->Length = 0;//UDFGetExtentLength(ExtInfo->Mapping);
+    AdPrint(("  DISK_FULL\n"));
+    return STATUS_DISK_FULL;
 } // end UDFAllocFreeExtent_()
 
 /*

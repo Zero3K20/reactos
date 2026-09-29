@@ -768,6 +768,13 @@ UDFIsBitmapBitFree(
     IN ULONG Lbn
     );
 
+BOOLEAN
+UDFIsExtentRangeFree(
+    IN PVCB Vcb,
+    IN ULONG Lbn,
+    IN ULONG Len
+    );
+
 SIZE_T
 UDFGetCachedBitmapLen(
     IN PVCB Vcb,
