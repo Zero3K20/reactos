@@ -2225,10 +2225,24 @@ UDFSetRenameInfo(
 
                                 StaleFcb = StaleLcb->ChildFcb;
 
-                                // Acquire target FCB to serialize with cleanup
+                                // Acquire target FCB to serialize with cleanup.
+                                // We already hold the parent (TargetDirInfo->Fcb)
+                                // exclusively at this point, while UDFTeardownStructures
+                                // acquires child-then-parent. To avoid an ABBA deadlock
+                                // with a concurrent close/teardown of this same FCB, this
+                                // acquire must not block (IgnoreWait = TRUE). But that
+                                // means it can fail — if we didn't check for that and
+                                // proceeded anyway, a concurrent teardown could free
+                                // StaleFcb while we still believe we hold it exclusively,
+                                // leading to a use-after-free on StaleFcb->FcbState below.
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
+                                    if (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        // Could not synchronize with a concurrent
+                                        // close/cleanup of the stale target — bail out
+                                        // instead of touching it unsynchronized.
+                                        try_return(RC = STATUS_SHARING_VIOLATION);
+                                    }
                                     StaleFcbAcquired = TRUE;
                                 }
 
