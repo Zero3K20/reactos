@@ -968,18 +968,22 @@ UDFMarkSpaceAsXXXNoProtect_(
 #endif // UDF_DBG
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->FSBM_BitCount) {
+        if (lba < partRoot) {
+            ASSERT(FALSE);
+            i++;
+            continue;
+        }
+
+        uint32 lbn = lba - partRoot;
+        if ((lbn+len) > Vcb->FSBM_BitCount) {
             // skip blocks beyond bitmap boundary
-            if (lba >= Vcb->FSBM_BitCount) {
+            if (lbn >= Vcb->FSBM_BitCount) {
                 ASSERT(FALSE);
                 i++;
                 continue;
             }
-            len = Vcb->FSBM_BitCount - lba;
+            len = Vcb->FSBM_BitCount - lbn;
         }
-
-        // Convert PSN to LBN for bitmap access
-        uint32 lbn = lba - partRoot;
 
         if (asUsed) {
             Vcb->SectorHint = lbn + len;
@@ -1187,8 +1191,10 @@ no_free_space_err:
             UDFReleaseResource(&(Vcb->BitMapResource1));
             continue;
         }
+        EXTENT_AD ReservedExt = Ext;
+        ReservedExt.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &ReservedExt, AS_USED); // reserve
         Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
-        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_USED); // reserve
         UDFReleaseResource(&(Vcb->BitMapResource1));
 
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
