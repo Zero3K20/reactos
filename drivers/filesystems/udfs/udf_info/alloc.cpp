@@ -530,8 +530,8 @@ While_3:
 } // end UDFGetBitmapLen()
 
 /*
-    This routine scans disc free space Bitmap for minimal suitable extent.
-    It returns maximal available extent if no long enough extents found.
+    This routine scans disc free space Bitmap from the allocation hint.
+    It returns the first suitable extent, or the maximal available extent.
  */
 SIZE_T
 UDFFindMinSuitableExtent(
@@ -553,34 +553,90 @@ UDFFindMinSuitableExtent(
     uint32 partRoot = Vcb->Partitions[0].PartitionRoot;
     uint32 lbnStart = SearchStart - partRoot;
     uint32 lbnLim = SearchLim - partRoot;
+    uint32 hint = Vcb->SectorHint;
+    ULONG pass;
 
-    UDF_CHECK_BITMAP_RESOURCE(Vcb);
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&(Vcb->BitMapResource1)) ||
+           ExIsResourceAcquiredSharedLite(&(Vcb->BitMapResource1)));
 
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    i=lbnStart;
+    if (hint < lbnStart || hint >= lbnLim) {
+        hint = lbnStart;
+    } else if (hint > lbnStart &&
+               (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, hint) :
+                                 UDFGetFreeBit((uint32*)Vcb->FSBM_Bitmap, hint))) {
+        while (hint > lbnStart &&
+               (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, hint - 1) :
+                                 UDFGetFreeBit((uint32*)Vcb->FSBM_Bitmap, hint - 1))) {
+            hint--;
+        }
+    }
+
+    for (pass = 0; pass < 2; pass++) {
+        uint32 scanStart = pass ? lbnStart : hint;
+        uint32 scanLim = pass ? hint : lbnLim;
+
+        if (scanStart >= scanLim)
+            continue;
+
+    i = scanStart;
     if (Vcb->BitmapFcb) {
         // Per-page scanning using RTL_BITMAP with cross-page run tracking
         ULONG CurrentRunStart = 0;
         ULONG CurrentRunLength = 0;
-        ULONG CurrentLbn = (ULONG)lbnStart;
+        ULONG CurrentLbn = (ULONG)scanStart;
 
-        while (CurrentLbn < lbnLim) {
-            UDFPinBitmapPage(Vcb, CurrentLbn);
+        while (CurrentLbn < scanLim) {
+            ULONG streamOffset = Vcb->BitmapDataOffset + (CurrentLbn >> 3);
+            ULONG pinBase = streamOffset & ~(BITMAP_PIN_GRANULARITY - 1);
+            ULONG allocEnd = (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart;
+            ULONG pinEnd = min(pinBase + BITMAP_PIN_GRANULARITY, allocEnd);
+            ULONG pinLength = pinEnd - pinBase;
+            LARGE_INTEGER offset;
+            PVOID bitmapBcb;
+            PVOID bitmapBuffer;
+            RTL_BITMAP bitmapRtl;
 
-            ULONG pageStart = Vcb->BitmapPageStartLbn;
-            ULONG pageBits = Vcb->BitmapPageBitCount;
+            offset.QuadPart = pinBase;
+            if (!CcPinRead(Vcb->BitmapStreamFileObject,
+                           &offset,
+                           pinLength,
+                           TRUE,
+                           &bitmapBcb,
+                           &bitmapBuffer)) {
+                break;
+            }
+
+            ULONG dataStart = max(Vcb->BitmapDataOffset, pinBase);
+            ULONG dataEnd = min(pinBase + pinLength,
+                                Vcb->BitmapDataOffset + Vcb->FSBM_ByteCount);
+            PULONG bitmapBits = (PULONG)((PUCHAR)bitmapBuffer +
+                                         (dataStart - pinBase));
+            ULONG pageStart = (dataStart - Vcb->BitmapDataOffset) << 3;
+            ULONG pageBits = (dataEnd - dataStart) << 3;
+
+            if (pageStart + pageBits > Vcb->FSBM_BitCount) {
+                pageBits = Vcb->FSBM_BitCount - pageStart;
+            }
+            RtlInitializeBitMap(&bitmapRtl, bitmapBits, pageBits);
 
             // Calculate local index within this page's RTL_BITMAP
             ULONG fromIndex = CurrentLbn - pageStart;
 
             // Find next run of set bits (free blocks) starting from fromIndex
             ULONG runStartIndex;
-            ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl, fromIndex, &runStartIndex);
+            ULONG runLen = UDFBitmapFindNextRunSet(&bitmapRtl, fromIndex, &runStartIndex);
 
             // Convert to absolute LBN
             ULONG runStartLbn = runStartIndex + pageStart;
+            ULONG pageEnd = min(pageStart + pageBits, scanLim);
+            if (runStartLbn >= scanLim) {
+                runLen = 0;
+            } else if (runLen > pageEnd - runStartLbn) {
+                runLen = pageEnd - runStartLbn;
+            }
 
             if (CurrentRunLength != 0) {
                 // We have an active run — check if this extends it
@@ -595,7 +651,10 @@ UDFFindMinSuitableExtent(
                         max_lba = CurrentRunStart;
                         max_len = CurrentRunLength;
                     }
-                    if (Vcb->CDR_Mode && (best_len || max_len)) break;
+                    if (Vcb->CDR_Mode && (best_len || max_len)) {
+                        CcUnpinData(bitmapBcb);
+                        break;
+                    }
 
                     // Start new run if we found free blocks
                     CurrentRunLength = runLen;
@@ -612,22 +671,33 @@ UDFFindMinSuitableExtent(
                 }
             }
 
+            if (CurrentRunLength >= Length) {
+                best_lba = CurrentRunStart;
+                best_len = CurrentRunLength;
+                CcUnpinData(bitmapBcb);
+                break;
+            }
+
             // Check early exit
-            if (best_len == Length) break;
+            if (best_len) {
+                CcUnpinData(bitmapBcb);
+                break;
+            }
 
             // Advance to next position
             if (runLen == 0) {
                 // No free run found on this page — skip to next page
-                CurrentLbn = pageStart + pageBits;
+                CurrentLbn = pageEnd;
             } else {
                 CurrentLbn = CurrentRunStart + CurrentRunLength;
             }
 
-            if (CurrentLbn > lbnLim) CurrentLbn = (ULONG)lbnLim;
+            if (CurrentLbn > scanLim) CurrentLbn = scanLim;
+            CcUnpinData(bitmapBcb);
         }
 
         // Final run evaluation
-        if (CurrentRunLength != 0) {
+        if (CurrentRunLength != 0 && !best_len) {
             if (CurrentRunLength >= Length) {
                 if (!best_len || (best_len > CurrentRunLength)) {
                     best_lba = CurrentRunStart;
@@ -640,13 +710,13 @@ UDFFindMinSuitableExtent(
         }
     } else {
     // Legacy in-memory bitmap path
-    while(i<lbnLim) {
-        ASSERT(i <= lbnLim);
-        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, lbnLim);
+    while(i<scanLim) {
+        ASSERT(i <= scanLim);
+        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, scanLim);
         if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
             // free extent found
             if (len >= Length) {
-                // minimize extent length
+                // Accept the first suitable extent
                 if (!best_len || (best_len > len)) {
                     best_lba = i;
                     best_len = len;
@@ -660,18 +730,20 @@ UDFFindMinSuitableExtent(
                     max_len = len;
                 }
             }
-            if (Vcb->CDR_Mode) break;
+            if (best_len || (Vcb->CDR_Mode && max_len)) break;
         }
         i += len;
     }
     } // end legacy path
-    UDFUnpinBitmapPage(Vcb);
+        if (best_len || (Vcb->CDR_Mode && max_len))
+            break;
+    }
     if (!best_len && !max_len) {
         UDFPrint(("UDF BM: FindMinSuitable: NO FREE SPACE lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
             (ULONG)lbnStart, (ULONG)lbnLim, Length, Vcb->FSBM_BitCount));
     }
     if (best_len) {
-        // minimal suitable block
+        // First suitable block
         (*MaxExtLen) = best_len;
         return best_lba + partRoot;  // convert LBN back to PSN
     }
@@ -705,7 +777,7 @@ UDFCheckSpaceAllocation_(
     BS = Vcb->BlockSize;
     BSh = Vcb->BlockSizeBits;
 
-    UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
     // walk through all frags in data area specified
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
     AdPrint(("ChkAlloc:Map:%x:File:%x:Line:%d\n",
@@ -909,6 +981,14 @@ UDFMarkSpaceAsXXXNoProtect_(
         // Convert PSN to LBN for bitmap access
         uint32 lbn = lba - partRoot;
 
+        if (asUsed) {
+            Vcb->SectorHint = lbn + len;
+            if (Vcb->SectorHint >= Vcb->FSBM_BitCount)
+                Vcb->SectorHint = 0;
+        } else if (lbn < Vcb->SectorHint) {
+            Vcb->SectorHint = lbn;
+        }
+
         // mark frag as XXX (see asUsed parameter)
         if (asUsed) {
             ASSERT(len);
@@ -1046,14 +1126,14 @@ UDFAllocFreeExtent_(
 
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
-
     if (blen > (SearchLim - SearchStart)) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         goto no_free_space_err;
     }
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
+        UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
                                                                SearchLim, &len, AllocFlags);
 
@@ -1081,22 +1161,54 @@ no_free_space_err:
             AdPrint(("  DISK_FULL\n"));
             return STATUS_DISK_FULL;
         }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+
         // append the frag found to mapping
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
+        // Recheck the candidate while reserving it. Another shared scanner
+        // may have claimed part of the extent since the scan completed.
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+        BOOLEAN stillFree = TRUE;
+        for (uint32 j = 0; j < len; j++) {
+            uint32 lbn = (Ext.extLocation - Vcb->Partitions[0].PartitionRoot) + j;
+            if (Vcb->BitmapFcb) {
+                if (!UDFIsBitmapBitFree(Vcb, lbn)) {
+                    stillFree = FALSE;
+                    break;
+                }
+            } else if (!UDFGetFreeBit((uint32*)Vcb->FSBM_Bitmap, lbn)) {
+                stillFree = FALSE;
+                break;
+            }
+        }
+        if (!stillFree) {
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+            continue;
+        }
+        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_USED); // reserve
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
-            if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
+            if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation,
+                              (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh)) {
                 AdPrint(("newly allocated extent contains BB\n"));
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED); // free
+                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation,
+                                      (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh); // bad -> bad+used
+                if (ExtInfo->Mapping) {
+                    UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
+                }
+                UDFReleaseResource(&(Vcb->BitMapResource1));
                 // roll back
-                blen += Ext.extLength>>BSh;
+                blen += (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh;
                 continue;
             }
         }
 
-        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
         if (!(ExtInfo->Mapping)) {
             // create new
 #ifdef UDF_TRACK_ALLOC_FREE_EXTENT
@@ -1106,32 +1218,35 @@ no_free_space_err:
 #endif // UDF_TRACK_ALLOC_FREE_EXTENT
             if (!ExtInfo->Mapping) {
                 BrutePoint();
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = 0;
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED); // used
         } else {
             // update existing
             Map = UDFExtentToMapping(&Ext);
             if (!Map) {
                 BrutePoint();
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = UDFGetExtentLength(ExtInfo->Mapping);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED); // used
             ExtInfo->Mapping = UDFMergeMappings(ExtInfo->Mapping, Map);
             MyFreePool__(Map);
         }
         if (!ExtInfo->Mapping) {
             BrutePoint();
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
             UDFReleaseResource(&(Vcb->BitMapResource1));
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
     return STATUS_SUCCESS;
 } // end UDFAllocFreeExtent_()
@@ -1149,6 +1264,8 @@ UDFGetPartFreeSpace(
     uint32 s=0;
 
     if (Vcb->BitmapFcb) {
+        // The pinned page is shared VCB state, so even readers must be exclusive.
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
         ULONG pos = 0;
         while (pos < Vcb->FSBM_BitCount) {
@@ -1166,6 +1283,7 @@ UDFGetPartFreeSpace(
             pos = startLbn + bits;
         }
         UDFUnpinBitmapPage(Vcb);
+        UDFReleaseResource(&(Vcb->BitMapResource1));
     } else {
         PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
         ULONG lim = (Vcb->FSBM_BitCount+7)/8;
@@ -1187,14 +1305,8 @@ UDFGetFreeSpace(
 //    uint32* cur = (uint32*)(Vcb->FSBM_Bitmap);
 
     if (!Vcb->CDR_Mode) {
-        if (Vcb->BitmapFcb) {
-            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
-        }
         for(i=0;i<Vcb->PartitionMaps;i++) {
             s += UDFGetPartFreeSpace(Vcb, i);
-        }
-        if (Vcb->BitmapFcb) {
-            UDFReleaseResource(&(Vcb->BitMapResource1));
         }
     } else {
         ASSERT(Vcb->FSBM_BitCount >= max(Vcb->NWA, Vcb->SessionEndLba));
