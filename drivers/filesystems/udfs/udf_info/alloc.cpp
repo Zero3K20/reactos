@@ -559,91 +559,30 @@ UDFFindMinSuitableExtent(
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    i=lbnStart;
-    if (Vcb->BitmapFcb) {
-        // Per-page scanning using RTL_BITMAP with cross-page run tracking
-        ULONG CurrentRunStart = 0;
-        ULONG CurrentRunLength = 0;
-        ULONG CurrentLbn = (ULONG)lbnStart;
-
-        while (CurrentLbn < lbnLim) {
-            UDFPinBitmapPage(Vcb, CurrentLbn);
-
-            ULONG pageStart = Vcb->BitmapPageStartLbn;
-            ULONG pageBits = Vcb->BitmapPageBitCount;
-
-            // Calculate local index within this page's RTL_BITMAP
-            ULONG fromIndex = CurrentLbn - pageStart;
-
-            // Find next run of set bits (free blocks) starting from fromIndex
-            ULONG runStartIndex;
-            ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl, fromIndex, &runStartIndex);
-
-            // Convert to absolute LBN
-            ULONG runStartLbn = runStartIndex + pageStart;
-
-            if (CurrentRunLength != 0) {
-                // We have an active run — check if this extends it
-                if (runLen == 0 || runStartLbn != CurrentLbn) {
-                    // Active run ended — evaluate it
-                    if (CurrentRunLength >= Length) {
-                        if (!best_len || (best_len > CurrentRunLength)) {
-                            best_lba = CurrentRunStart;
-                            best_len = CurrentRunLength;
-                        }
-                    } else if (max_len < CurrentRunLength) {
-                        max_lba = CurrentRunStart;
-                        max_len = CurrentRunLength;
-                    }
-                    if (Vcb->CDR_Mode && (best_len || max_len)) break;
-
-                    // Start new run if we found free blocks
-                    CurrentRunLength = runLen;
-                    CurrentRunStart = runStartLbn;
-                } else {
-                    // Extends current run
-                    CurrentRunLength += runLen;
-                }
-            } else {
-                // No active run — start new one if found
-                if (runLen != 0) {
-                    CurrentRunLength = runLen;
-                    CurrentRunStart = runStartLbn;
-                }
-            }
-
-            // Check early exit
-            if (best_len == Length) break;
-
-            // Advance to next position
-            if (runLen == 0) {
-                // No free run found on this page — skip to next page
-                CurrentLbn = pageStart + pageBits;
-            } else {
-                CurrentLbn = CurrentRunStart + CurrentRunLength;
-            }
-
-            if (CurrentLbn > lbnLim) CurrentLbn = (ULONG)lbnLim;
-        }
-
-        // Final run evaluation
-        if (CurrentRunLength != 0) {
-            if (CurrentRunLength >= Length) {
-                if (!best_len || (best_len > CurrentRunLength)) {
-                    best_lba = CurrentRunStart;
-                    best_len = CurrentRunLength;
-                }
-            } else if (max_len < CurrentRunLength) {
-                max_lba = CurrentRunStart;
-                max_len = CurrentRunLength;
-            }
-        }
-    } else {
-    // Legacy in-memory bitmap path
+    i = lbnStart;
     while(i<lbnLim) {
         ASSERT(i <= lbnLim);
-        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, lbnLim);
-        if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
+        BOOLEAN free = FALSE;
+        if (Vcb->BitmapFcb) {
+            UDFPinBitmapPage(Vcb, (ULONG)i);
+            ULONG pageStart = Vcb->BitmapPageStartLbn;
+            ULONG pageEnd = pageStart + Vcb->BitmapPageBitCount;
+            ULONG runStart;
+            ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl,
+                                                   (ULONG)i - pageStart,
+                                                   &runStart);
+            if (!runLen) {
+                i = min((SIZE_T)pageEnd, (SIZE_T)lbnLim);
+                continue;
+            }
+            i = runStart + pageStart;
+            len = UDFGetCachedBitmapLen(Vcb, (ULONG)i, lbnLim);
+            free = TRUE;
+        } else {
+            len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, lbnLim);
+            free = UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i);
+        }
+        if (free) {
             // free extent found
             if (len >= Length) {
                 // minimize extent length
@@ -664,7 +603,6 @@ UDFFindMinSuitableExtent(
         }
         i += len;
     }
-    } // end legacy path
     UDFUnpinBitmapPage(Vcb);
     if (!best_len && !max_len) {
         UDFPrint(("UDF BM: FindMinSuitable: NO FREE SPACE lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
