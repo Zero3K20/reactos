@@ -611,6 +611,12 @@ UDFFindMinSuitableExtent(
                 }
             }
 
+            if (CurrentRunLength >= Length && CurrentRunLength != 0) {
+                *MaxExtLen = CurrentRunLength;
+                UDFUnpinBitmapPage(Vcb);
+                return CurrentRunStart + partRoot;
+            }
+
             // Check early exit
             if (best_len == Length) break;
 
