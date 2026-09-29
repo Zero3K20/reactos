@@ -1035,7 +1035,9 @@ UDFAllocFreeExtent_(
 {
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
-    uint32 len, LBS, BSh, blen;
+    uint32 len, LBS, BSh, blen, CurrentSearchLim, AllocatedLength;
+    uint32 SearchCursor, SearchWrapLimit;
+    BOOLEAN SearchWrapped;
 
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
@@ -1048,14 +1050,37 @@ UDFAllocFreeExtent_(
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
 
+    SearchCursor = Vcb->BitmapAllocHint;
+    if (SearchCursor < SearchStart || SearchCursor >= SearchLim)
+        SearchCursor = SearchStart;
+    SearchWrapLimit = SearchCursor;
+    SearchWrapped = FALSE;
+
     if (blen > (SearchLim - SearchStart)) {
         goto no_free_space_err;
     }
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
-        Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
-                                                               SearchLim, &len, AllocFlags);
+        CurrentSearchLim = SearchWrapped ? SearchWrapLimit : SearchLim;
+
+        if (SearchCursor >= CurrentSearchLim) {
+            if (SearchWrapped) {
+                len = 0;
+            } else {
+                SearchCursor = SearchStart;
+                SearchWrapped = TRUE;
+                continue;
+            }
+        } else {
+            Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchCursor,
+                                                       CurrentSearchLim, &len, AllocFlags);
+            if (!len && !SearchWrapped && SearchCursor != SearchStart) {
+                SearchCursor = SearchStart;
+                SearchWrapped = TRUE;
+                continue;
+            }
+        }
 
         if (len >= blen) {
             // complete search
@@ -1085,11 +1110,23 @@ no_free_space_err:
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
+        AllocatedLength = Ext.extLength >> BSh;
+        SearchCursor = Ext.extLocation + AllocatedLength;
+        if (SearchCursor >= CurrentSearchLim) {
+            if (SearchWrapped) {
+                SearchCursor = SearchWrapLimit;
+            } else {
+                SearchCursor = SearchStart;
+                SearchWrapped = TRUE;
+            }
+        }
+
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
             if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
                 AdPrint(("newly allocated extent contains BB\n"));
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
+                Vcb->BitmapAllocHint = SearchCursor;
                 // roll back
                 blen += Ext.extLength>>BSh;
                 continue;
@@ -1130,6 +1167,7 @@ no_free_space_err:
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+        Vcb->BitmapAllocHint = SearchCursor;
     }
     UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
