@@ -587,10 +587,9 @@ UDFFindMinSuitableExtent(
                 if (runLen == 0 || runStartLbn != CurrentLbn) {
                     // Active run ended — evaluate it
                     if (CurrentRunLength >= Length) {
-                        if (!best_len || (best_len > CurrentRunLength)) {
-                            best_lba = CurrentRunStart;
-                            best_len = CurrentRunLength;
-                        }
+                        *MaxExtLen = CurrentRunLength;
+                        UDFUnpinBitmapPage(Vcb);
+                        return CurrentRunStart + partRoot;
                     } else if (max_len < CurrentRunLength) {
                         max_lba = CurrentRunStart;
                         max_len = CurrentRunLength;
@@ -612,6 +611,12 @@ UDFFindMinSuitableExtent(
                 }
             }
 
+            if (CurrentRunLength >= Length && CurrentRunLength != 0) {
+                *MaxExtLen = CurrentRunLength;
+                UDFUnpinBitmapPage(Vcb);
+                return CurrentRunStart + partRoot;
+            }
+
             // Check early exit
             if (best_len == Length) break;
 
@@ -629,10 +634,9 @@ UDFFindMinSuitableExtent(
         // Final run evaluation
         if (CurrentRunLength != 0) {
             if (CurrentRunLength >= Length) {
-                if (!best_len || (best_len > CurrentRunLength)) {
-                    best_lba = CurrentRunStart;
-                    best_len = CurrentRunLength;
-                }
+                *MaxExtLen = CurrentRunLength;
+                UDFUnpinBitmapPage(Vcb);
+                return CurrentRunStart + partRoot;
             } else if (max_len < CurrentRunLength) {
                 max_lba = CurrentRunStart;
                 max_len = CurrentRunLength;
@@ -651,8 +655,9 @@ UDFFindMinSuitableExtent(
                     best_lba = i;
                     best_len = len;
                 }
-                if (len == Length)
-                    break;
+                *MaxExtLen = len;
+                UDFUnpinBitmapPage(Vcb);
+                return i + partRoot;
             } else {
                 // remember max extent
                 if (max_len < len) {
