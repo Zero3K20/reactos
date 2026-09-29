@@ -580,124 +580,124 @@ UDFFindMinSuitableExtent(
         if (scanStart >= scanLim)
             continue;
 
-        i = scanStart;
-        if (Vcb->BitmapFcb) {
-            // Per-page scanning using RTL_BITMAP with cross-page run tracking
-            ULONG CurrentRunStart = 0;
-            ULONG CurrentRunLength = 0;
-            ULONG CurrentLbn = (ULONG)scanStart;
+    i = scanStart;
+    if (Vcb->BitmapFcb) {
+        // Per-page scanning using RTL_BITMAP with cross-page run tracking
+        ULONG CurrentRunStart = 0;
+        ULONG CurrentRunLength = 0;
+        ULONG CurrentLbn = (ULONG)scanStart;
 
-            while (CurrentLbn < scanLim) {
-                UDFPinBitmapPage(Vcb, CurrentLbn);
+        while (CurrentLbn < scanLim) {
+            UDFPinBitmapPage(Vcb, CurrentLbn);
 
-                ULONG pageStart = Vcb->BitmapPageStartLbn;
-                ULONG pageBits = Vcb->BitmapPageBitCount;
+            ULONG pageStart = Vcb->BitmapPageStartLbn;
+            ULONG pageBits = Vcb->BitmapPageBitCount;
 
-                // Calculate local index within this page's RTL_BITMAP
-                ULONG fromIndex = CurrentLbn - pageStart;
+            // Calculate local index within this page's RTL_BITMAP
+            ULONG fromIndex = CurrentLbn - pageStart;
 
-                // Find next run of set bits (free blocks) starting from fromIndex
-                ULONG runStartIndex;
-                ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl, fromIndex, &runStartIndex);
+            // Find next run of set bits (free blocks) starting from fromIndex
+            ULONG runStartIndex;
+            ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl, fromIndex, &runStartIndex);
 
-                // Convert to absolute LBN
-                ULONG runStartLbn = runStartIndex + pageStart;
-                ULONG pageEnd = min(pageStart + pageBits, scanLim);
-                if (runStartLbn >= scanLim) {
-                    runLen = 0;
-                } else if (runLen > pageEnd - runStartLbn) {
-                    runLen = pageEnd - runStartLbn;
-                }
-
-                if (CurrentRunLength != 0) {
-                    // We have an active run — check if this extends it
-                    if (runLen == 0 || runStartLbn != CurrentLbn) {
-                        // Active run ended — evaluate it
-                        if (CurrentRunLength >= Length) {
-                            if (!best_len || (best_len > CurrentRunLength)) {
-                                best_lba = CurrentRunStart;
-                                best_len = CurrentRunLength;
-                            }
-                        } else if (max_len < CurrentRunLength) {
-                            max_lba = CurrentRunStart;
-                            max_len = CurrentRunLength;
-                        }
-                        if (best_len || (Vcb->CDR_Mode && max_len)) break;
-
-                        // Start new run if we found free blocks
-                        CurrentRunLength = runLen;
-                        CurrentRunStart = runStartLbn;
-                    } else {
-                        // Extends current run
-                        CurrentRunLength += runLen;
-                    }
-                } else {
-                    // No active run — start new one if found
-                    if (runLen != 0) {
-                        CurrentRunLength = runLen;
-                        CurrentRunStart = runStartLbn;
-                    }
-                }
-
-                if (CurrentRunLength >= Length) {
-                    best_lba = CurrentRunStart;
-                    best_len = CurrentRunLength;
-                    break;
-                }
-
-                // Check early exit
-                if (best_len) break;
-
-                // Advance to next position
-                if (runLen == 0) {
-                    // No free run found on this page — skip to next page
-                    CurrentLbn = pageEnd;
-                } else {
-                    CurrentLbn = CurrentRunStart + CurrentRunLength;
-                }
-
-                if (CurrentLbn > scanLim) CurrentLbn = scanLim;
+            // Convert to absolute LBN
+            ULONG runStartLbn = runStartIndex + pageStart;
+            ULONG pageEnd = min(pageStart + pageBits, scanLim);
+            if (runStartLbn >= scanLim) {
+                runLen = 0;
+            } else if (runLen > pageEnd - runStartLbn) {
+                runLen = pageEnd - runStartLbn;
             }
 
-            // Final run evaluation
-            if (CurrentRunLength != 0 && !best_len) {
-                if (CurrentRunLength >= Length) {
-                    if (!best_len || (best_len > CurrentRunLength)) {
-                        best_lba = CurrentRunStart;
-                        best_len = CurrentRunLength;
-                    }
-                } else if (max_len < CurrentRunLength) {
-                    max_lba = CurrentRunStart;
-                    max_len = CurrentRunLength;
-                }
-            }
-        } else {
-            // Legacy in-memory bitmap path
-            while(i<scanLim) {
-                ASSERT(i <= scanLim);
-                len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, scanLim);
-                if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
-                    // free extent found
-                    if (len >= Length) {
-                        // Accept the first suitable extent
-                        if (!best_len || (best_len > len)) {
-                            best_lba = i;
-                            best_len = len;
+            if (CurrentRunLength != 0) {
+                // We have an active run — check if this extends it
+                if (runLen == 0 || runStartLbn != CurrentLbn) {
+                    // Active run ended — evaluate it
+                    if (CurrentRunLength >= Length) {
+                        if (!best_len || (best_len > CurrentRunLength)) {
+                            best_lba = CurrentRunStart;
+                            best_len = CurrentRunLength;
                         }
-                        if (len == Length)
-                            break;
-                    } else {
-                        // remember max extent
-                        if (max_len < len) {
-                            max_lba = i;
-                            max_len = len;
-                        }
+                    } else if (max_len < CurrentRunLength) {
+                        max_lba = CurrentRunStart;
+                        max_len = CurrentRunLength;
                     }
                     if (best_len || (Vcb->CDR_Mode && max_len)) break;
+
+                    // Start new run if we found free blocks
+                    CurrentRunLength = runLen;
+                    CurrentRunStart = runStartLbn;
+                } else {
+                    // Extends current run
+                    CurrentRunLength += runLen;
                 }
-                i += len;
+            } else {
+                // No active run — start new one if found
+                if (runLen != 0) {
+                    CurrentRunLength = runLen;
+                    CurrentRunStart = runStartLbn;
+                }
             }
-        } // end legacy path
+
+            if (CurrentRunLength >= Length) {
+                best_lba = CurrentRunStart;
+                best_len = CurrentRunLength;
+                break;
+            }
+
+            // Check early exit
+            if (best_len) break;
+
+            // Advance to next position
+            if (runLen == 0) {
+                // No free run found on this page — skip to next page
+                CurrentLbn = pageEnd;
+            } else {
+                CurrentLbn = CurrentRunStart + CurrentRunLength;
+            }
+
+            if (CurrentLbn > scanLim) CurrentLbn = scanLim;
+        }
+
+        // Final run evaluation
+        if (CurrentRunLength != 0 && !best_len) {
+            if (CurrentRunLength >= Length) {
+                if (!best_len || (best_len > CurrentRunLength)) {
+                    best_lba = CurrentRunStart;
+                    best_len = CurrentRunLength;
+                }
+            } else if (max_len < CurrentRunLength) {
+                max_lba = CurrentRunStart;
+                max_len = CurrentRunLength;
+            }
+        }
+    } else {
+        // Legacy in-memory bitmap path
+        while(i<scanLim) {
+            ASSERT(i <= scanLim);
+            len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, scanLim);
+            if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
+                // free extent found
+                if (len >= Length) {
+                    // Accept the first suitable extent
+                    if (!best_len || (best_len > len)) {
+                        best_lba = i;
+                        best_len = len;
+                    }
+                    if (len == Length)
+                        break;
+                } else {
+                    // remember max extent
+                    if (max_len < len) {
+                        max_lba = i;
+                        max_len = len;
+                    }
+                }
+                if (best_len || (Vcb->CDR_Mode && max_len)) break;
+            }
+            i += len;
+        }
+    } // end legacy path
         if (best_len || (Vcb->CDR_Mode && max_len))
             break;
     }
