@@ -205,14 +205,26 @@ UDFCommonClose(
 
             // try to clean up as long chain as it is possible
             // TODO: refactor to use UDFCommonClosePrivate
+            //
+            // Acquire Vcb (as UDFCommonClosePrivate and the structural
+            // operations in UDFCommonSetInfo - rename/link - already do)
+            // before tearing down/potentially deleting the Fcb. FastFAT's
+            // FatCommonClose follows the same pattern: it acquires the Vcb
+            // resource before any Fcb teardown, so close is always
+            // serialized against rename (which holds the Vcb exclusively
+            // for its whole duration). Without this, a close running here
+            // could race with a rename that is peeking at/acquiring this
+            // same Fcb via a non-blocking acquire, risking a use-after-free.
             {
                 BOOLEAN RemovedFcb = FALSE;
+                UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
                 UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
                 // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
                 UDFTeardownStructures(IrpContext, Fcb, FALSE, &RemovedFcb);
                 if (!RemovedFcb) {
                     UDFReleaseFcb(IrpContext, Fcb);
                 }
+                UDFReleaseVcb(IrpContext, Vcb);
             }
         }
 
