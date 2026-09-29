@@ -25,6 +25,12 @@
 #define         MEM_USFIDC_TAG                  "US_FIDC"
 #define         MEM_USHL_TAG                    "US_HL"
 
+// Number of times to retry a non-blocking exclusive acquire of a stale
+// target FCB in UDFSetRenameInfo() before giving up with
+// STATUS_SHARING_VIOLATION. The conflicting owner is normally a
+// concurrent close/teardown that releases the FCB quickly.
+#define         UDF_STALE_FCB_ACQUIRE_RETRY_COUNT   20
+
 /*************************************************************************
 *
 * Function: UDFCommonQueryInfo()
@@ -2237,11 +2243,27 @@ UDFSetRenameInfo(
                                 // leading to a use-after-free on StaleFcb->FcbState below.
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    if (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
-                                        // Could not synchronize with a concurrent
-                                        // close/cleanup of the stale target — bail out
-                                        // instead of touching it unsynchronized.
-                                        try_return(RC = STATUS_SHARING_VIOLATION);
+                                    // The concurrent owner (typically a delayed-close
+                                    // teardown) only holds this FCB briefly, so retry
+                                    // the non-blocking acquire a bounded number of times
+                                    // (this routine always runs with IRP_CONTEXT_FLAG_WAIT
+                                    // set, so it is safe to block here) before giving up.
+                                    // This lets the rename succeed in the common case
+                                    // instead of always failing with
+                                    // STATUS_SHARING_VIOLATION on transient contention.
+                                    ULONG StaleFcbRetry = 0;
+                                    while (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        if (++StaleFcbRetry > UDF_STALE_FCB_ACQUIRE_RETRY_COUNT) {
+                                            // Still could not synchronize with a
+                                            // concurrent close/cleanup of the stale
+                                            // target — bail out instead of touching it
+                                            // unsynchronized.
+                                            try_return(RC = STATUS_SHARING_VIOLATION);
+                                        }
+                                        LARGE_INTEGER StaleFcbRetryDelay;
+                                        // grow delay: 1ms, 2ms, 3ms, ...
+                                        StaleFcbRetryDelay.QuadPart = -((LONGLONG)StaleFcbRetry * 10000);
+                                        KeDelayExecutionThread(KernelMode, FALSE, &StaleFcbRetryDelay);
                                     }
                                     StaleFcbAcquired = TRUE;
                                 }
