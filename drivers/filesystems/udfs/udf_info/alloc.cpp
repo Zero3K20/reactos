@@ -1055,6 +1055,8 @@ UDFAllocFreeExtent_(
         SearchCursor = SearchStart;
     SearchWrapLimit = SearchCursor;
     SearchWrapped = FALSE;
+    UDFPrint(("UDF alloc hint: request=%x range=[%x,%x) stored=%x start=%x\n",
+        blen, SearchStart, SearchLim, Vcb->BitmapAllocHint, SearchCursor));
 
     if (blen > (SearchLim - SearchStart)) {
         goto no_free_space_err;
@@ -1068,6 +1070,8 @@ UDFAllocFreeExtent_(
             if (SearchWrapped) {
                 len = 0;
             } else {
+                UDFPrint(("UDF alloc hint: reached end at %x; wrapping to %x\n",
+                    SearchCursor, SearchStart));
                 SearchCursor = SearchStart;
                 SearchWrapped = TRUE;
                 continue;
@@ -1076,6 +1080,8 @@ UDFAllocFreeExtent_(
             Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchCursor,
                                                        CurrentSearchLim, &len, AllocFlags);
             if (!len && !SearchWrapped && SearchCursor != SearchStart) {
+                UDFPrint(("UDF alloc hint: no extent at %x; wrapping to %x\n",
+                    SearchCursor, SearchStart));
                 SearchCursor = SearchStart;
                 SearchWrapped = TRUE;
                 continue;
@@ -1094,8 +1100,9 @@ UDFAllocFreeExtent_(
         } else {
 no_free_space_err:
             // no more free space. abort
-            UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
-                blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
+            UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x Cursor=%x Wrapped=%u Hint=%x BitmapFcb=%p BitCount=%x\n",
+                blen, SearchStart, SearchLim, SearchCursor, SearchWrapped,
+                Vcb->BitmapAllocHint, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
             if (ExtInfo->Mapping) {
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 MyFreePool__(ExtInfo->Mapping);
@@ -1118,6 +1125,8 @@ no_free_space_err:
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
                 Vcb->BitmapAllocHint = Ext.extLocation + AllocatedLength;
+                UDFPrint(("UDF alloc hint: rejected bad extent=%x blocks=%x next=%x\n",
+                    Ext.extLocation, AllocatedLength, Vcb->BitmapAllocHint));
                 // roll back
                 blen += Ext.extLength>>BSh;
                 continue;
@@ -1159,6 +1168,8 @@ no_free_space_err:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         Vcb->BitmapAllocHint = Ext.extLocation + AllocatedLength;
+        UDFPrint(("UDF alloc hint: allocated=%x blocks=%x next=%x wrapped=%u remaining=%x\n",
+            Ext.extLocation, AllocatedLength, Vcb->BitmapAllocHint, SearchWrapped, blen));
     }
     UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
