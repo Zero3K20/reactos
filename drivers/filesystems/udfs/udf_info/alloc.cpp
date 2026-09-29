@@ -568,17 +568,45 @@ UDFFindMinSuitableExtent(
         ULONG CurrentLbn = (ULONG)lbnStart;
 
         while (CurrentLbn < lbnLim) {
-            UDFPinBitmapPage(Vcb, CurrentLbn);
+            ULONG streamOffset = Vcb->BitmapDataOffset + (CurrentLbn >> 3);
+            ULONG pinBase = streamOffset & ~(BITMAP_PIN_GRANULARITY - 1);
+            ULONG allocEnd = (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart;
+            ULONG pinEnd = min(pinBase + BITMAP_PIN_GRANULARITY, allocEnd);
+            ULONG pinLength = pinEnd - pinBase;
+            LARGE_INTEGER offset;
+            PVOID bitmapBcb;
+            PVOID bitmapBuffer;
+            RTL_BITMAP bitmapRtl;
 
-            ULONG pageStart = Vcb->BitmapPageStartLbn;
-            ULONG pageBits = Vcb->BitmapPageBitCount;
+            offset.QuadPart = pinBase;
+            if (!CcPinRead(Vcb->BitmapStreamFileObject,
+                           &offset,
+                           pinLength,
+                           TRUE,
+                           &bitmapBcb,
+                           &bitmapBuffer)) {
+                break;
+            }
+
+            ULONG dataStart = max(Vcb->BitmapDataOffset, pinBase);
+            ULONG dataEnd = min(pinBase + pinLength,
+                                Vcb->BitmapDataOffset + Vcb->FSBM_ByteCount);
+            PULONG bitmapBits = (PULONG)((PUCHAR)bitmapBuffer +
+                                         (dataStart - pinBase));
+            ULONG pageStart = (dataStart - Vcb->BitmapDataOffset) << 3;
+            ULONG pageBits = (dataEnd - dataStart) << 3;
+
+            if (pageStart + pageBits > Vcb->FSBM_BitCount) {
+                pageBits = Vcb->FSBM_BitCount - pageStart;
+            }
+            RtlInitializeBitMap(&bitmapRtl, bitmapBits, pageBits);
 
             // Calculate local index within this page's RTL_BITMAP
             ULONG fromIndex = CurrentLbn - pageStart;
 
             // Find next run of set bits (free blocks) starting from fromIndex
             ULONG runStartIndex;
-            ULONG runLen = UDFBitmapFindNextRunSet(&Vcb->BitmapRtl, fromIndex, &runStartIndex);
+            ULONG runLen = UDFBitmapFindNextRunSet(&bitmapRtl, fromIndex, &runStartIndex);
 
             // Convert to absolute LBN
             ULONG runStartLbn = runStartIndex + pageStart;
@@ -596,7 +624,10 @@ UDFFindMinSuitableExtent(
                         max_lba = CurrentRunStart;
                         max_len = CurrentRunLength;
                     }
-                    if (Vcb->CDR_Mode && (best_len || max_len)) break;
+                    if (Vcb->CDR_Mode && (best_len || max_len)) {
+                        CcUnpinData(bitmapBcb);
+                        break;
+                    }
 
                     // Start new run if we found free blocks
                     CurrentRunLength = runLen;
@@ -614,7 +645,10 @@ UDFFindMinSuitableExtent(
             }
 
             // Check early exit
-            if (best_len == Length) break;
+            if (best_len == Length) {
+                CcUnpinData(bitmapBcb);
+                break;
+            }
 
             // Advance to next position
             if (runLen == 0) {
@@ -625,6 +659,7 @@ UDFFindMinSuitableExtent(
             }
 
             if (CurrentLbn > lbnLim) CurrentLbn = (ULONG)lbnLim;
+            CcUnpinData(bitmapBcb);
         }
 
         // Final run evaluation
@@ -666,7 +701,6 @@ UDFFindMinSuitableExtent(
         i += len;
     }
     } // end legacy path
-    UDFUnpinBitmapPage(Vcb);
     if (!best_len && !max_len) {
         UDFPrint(("UDF BM: FindMinSuitable: NO FREE SPACE lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
             (ULONG)lbnStart, (ULONG)lbnLim, Length, Vcb->FSBM_BitCount));
@@ -1054,11 +1088,7 @@ UDFAllocFreeExtent_(
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
-        if (Vcb->BitmapFcb) {
-            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
-        } else {
-            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
-        }
+        UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
                                                                SearchLim, &len, AllocFlags);
 
