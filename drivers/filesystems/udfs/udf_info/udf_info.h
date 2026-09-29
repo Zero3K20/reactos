@@ -314,6 +314,7 @@ SIZE_T    UDFFindMinSuitableExtent(IN PVCB Vcb,
                                    IN uint32 SearchStart,
                                    IN uint32 SearchLim,
                                    OUT uint32* MaxExtLen,
+                                   IN BOOLEAN FirstFit,
                                    IN uint8  AllocFlags);
 
 #ifdef UDF_CHECK_DISK_ALLOCATION

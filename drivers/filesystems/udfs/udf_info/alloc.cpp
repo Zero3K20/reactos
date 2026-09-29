@@ -540,6 +540,7 @@ UDFFindMinSuitableExtent(
     IN uint32 SearchStart,  // PSN
     IN uint32 SearchLim,    // PSN, NOT included
     OUT uint32* MaxExtLen,
+    IN BOOLEAN FirstFit,
     IN uint8  AllocFlags
     )
 {
@@ -587,6 +588,11 @@ UDFFindMinSuitableExtent(
                 if (runLen == 0 || runStartLbn != CurrentLbn) {
                     // Active run ended — evaluate it
                     if (CurrentRunLength >= Length) {
+                        if (FirstFit) {
+                            best_lba = CurrentRunStart;
+                            best_len = CurrentRunLength;
+                            break;
+                        }
                         if (!best_len || (best_len > CurrentRunLength)) {
                             best_lba = CurrentRunStart;
                             best_len = CurrentRunLength;
@@ -610,6 +616,12 @@ UDFFindMinSuitableExtent(
                     CurrentRunLength = runLen;
                     CurrentRunStart = runStartLbn;
                 }
+            }
+
+            if (FirstFit && CurrentRunLength >= Length) {
+                best_lba = CurrentRunStart;
+                best_len = CurrentRunLength;
+                break;
             }
 
             // Check early exit
@@ -646,6 +658,11 @@ UDFFindMinSuitableExtent(
         if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
             // free extent found
             if (len >= Length) {
+                if (FirstFit) {
+                    best_lba = i;
+                    best_len = len;
+                    break;
+                }
                 // minimize extent length
                 if (!best_len || (best_len > len)) {
                     best_lba = i;
@@ -1037,7 +1054,7 @@ UDFAllocFreeExtent_(
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen, CurrentSearchLim, AllocatedLength;
     uint32 SearchCursor, SearchWrapLimit;
-    BOOLEAN SearchWrapped;
+    BOOLEAN SearchWrapped, FirstFit;
 
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
@@ -1055,8 +1072,9 @@ UDFAllocFreeExtent_(
         SearchCursor = SearchStart;
     SearchWrapLimit = SearchCursor;
     SearchWrapped = FALSE;
-    UDFPrint(("UDF alloc hint: request=%x range=[%x,%x) stored=%x start=%x\n",
-        blen, SearchStart, SearchLim, Vcb->BitmapAllocHint, SearchCursor));
+    UDFPrint(("UDF alloc hint: request=%x range=[%x,%x) stored=%x start=%x hinted=%u\n",
+        blen, SearchStart, SearchLim, Vcb->BitmapAllocHint, SearchCursor,
+        SearchCursor != SearchStart));
 
     if (blen > (SearchLim - SearchStart)) {
         goto no_free_space_err;
@@ -1077,8 +1095,9 @@ UDFAllocFreeExtent_(
                 continue;
             }
         } else {
+            FirstFit = (SearchCursor != SearchStart);
             Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchCursor,
-                                                       CurrentSearchLim, &len, AllocFlags);
+                                                       CurrentSearchLim, &len, FirstFit, AllocFlags);
             if (!len && !SearchWrapped && SearchCursor != SearchStart) {
                 UDFPrint(("UDF alloc hint: no extent at %x; wrapping to %x\n",
                     SearchCursor, SearchStart));
@@ -1168,8 +1187,9 @@ no_free_space_err:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         Vcb->BitmapAllocHint = Ext.extLocation + AllocatedLength;
-        UDFPrint(("UDF alloc hint: allocated=%x blocks=%x next=%x wrapped=%u remaining=%x\n",
-            Ext.extLocation, AllocatedLength, Vcb->BitmapAllocHint, SearchWrapped, blen));
+        UDFPrint(("UDF alloc hint: allocated=%x blocks=%x next=%x firstfit=%u wrapped=%u remaining=%x\n",
+            Ext.extLocation, AllocatedLength, Vcb->BitmapAllocHint,
+            FirstFit, SearchWrapped, blen));
     }
     UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
