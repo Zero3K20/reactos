@@ -1111,22 +1111,13 @@ no_free_space_err:
         ASSERT(Ext.extLocation);
 
         AllocatedLength = Ext.extLength >> BSh;
-        SearchCursor = Ext.extLocation + AllocatedLength;
-        if (SearchCursor >= CurrentSearchLim) {
-            if (SearchWrapped) {
-                SearchCursor = SearchWrapLimit;
-            } else {
-                SearchCursor = SearchStart;
-                SearchWrapped = TRUE;
-            }
-        }
 
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
             if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
                 AdPrint(("newly allocated extent contains BB\n"));
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
-                Vcb->BitmapAllocHint = SearchCursor;
+                Vcb->BitmapAllocHint = Ext.extLocation + AllocatedLength;
                 // roll back
                 blen += Ext.extLength>>BSh;
                 continue;
@@ -1167,7 +1158,7 @@ no_free_space_err:
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        Vcb->BitmapAllocHint = SearchCursor;
+        Vcb->BitmapAllocHint = Ext.extLocation + AllocatedLength;
     }
     UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
