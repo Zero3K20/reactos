@@ -2228,12 +2228,16 @@ UDFSetRenameInfo(
                                 // Acquire target FCB to serialize with cleanup
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
-                                    StaleFcbAcquired = TRUE;
+                                    if (UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        StaleFcbAcquired = TRUE;
+                                    } else {
+                                        StaleFcb = NULL;
+                                        StaleLcb = NULL;
+                                    }
                                 }
 
                                 // Cannot remove LCB that still has open references.
-                                if (StaleLcb->Reference != 0) {
+                                if (StaleLcb && StaleLcb->Reference != 0) {
 
                                     try_return(RC = STATUS_ACCESS_DENIED);
                                 }
@@ -2290,9 +2294,6 @@ UDFSetRenameInfo(
         //
         if (StaleLcb) {
             NeedRemovePrefix = TRUE;
-            if (StaleFcb) {
-                StaleFcb->FcbState |= UDF_FCB_DELETED;
-            }
         }
 
         ASSERT(UDFDirIndex(FileInfo->ParentFile->Dloc->DirIndex, FileInfo->Index)->FileInfo == FileInfo);
