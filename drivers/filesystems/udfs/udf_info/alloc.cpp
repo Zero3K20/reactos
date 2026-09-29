@@ -554,7 +554,7 @@ UDFFindMinSuitableExtent(
     uint32 lbnStart = SearchStart - partRoot;
     uint32 lbnLim = SearchLim - partRoot;
 
-    UDF_CHECK_BITMAP_RESOURCE(Vcb);
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&(Vcb->BitMapResource1)));
 
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);

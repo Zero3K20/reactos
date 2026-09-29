@@ -221,11 +221,6 @@ UDFIllegalFcbAccess(
     ASSERT( ExIsResourceAcquiredExclusiveLite(&(Vcb->VcbResource)) );
 
 #define UDF_CHECK_BITMAP_RESOURCE(Vcb)
-/* \
-    ASSERT( (ExIsResourceAcquiredExclusiveLite(&(Vcb->VcbResource)) ||  \
-             ExIsResourceAcquiredSharedLite(&(Vcb->VcbResource))) ); \
-    ASSERT(ExIsResourceAcquiredExclusiveLite(&(Vcb->BitMapResource1))); \
-*/
 #endif //UDF_DBG
 
 #define UDFRaiseStatus(IC,S) {                              \
@@ -408,4 +403,3 @@ UdfGetFidFromLbAddr(lb_addr lbAddr)
 }
 
 #endif  // _UDF_UDF_H_
-
