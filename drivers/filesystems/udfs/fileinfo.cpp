@@ -25,12 +25,6 @@
 #define         MEM_USFIDC_TAG                  "US_FIDC"
 #define         MEM_USHL_TAG                    "US_HL"
 
-// Number of times to retry a non-blocking exclusive acquire of a stale
-// target FCB in UDFSetRenameInfo() before giving up with
-// STATUS_SHARING_VIOLATION. The conflicting owner is normally a
-// concurrent close/teardown that releases the FCB quickly.
-#define         UDF_STALE_FCB_ACQUIRE_RETRY_COUNT   20
-
 /*************************************************************************
 *
 * Function: UDFCommonQueryInfo()
@@ -2236,41 +2230,29 @@ UDFSetRenameInfo(
                                 // exclusively at this point, while UDFTeardownStructures
                                 // acquires child-then-parent. To avoid an ABBA deadlock
                                 // with a concurrent close/teardown of this same FCB, this
-                                // acquire must not block (IgnoreWait = TRUE). But that
-                                // means it can fail — if we didn't check for that and
-                                // proceeded anyway, a concurrent teardown could free
-                                // StaleFcb while we still believe we hold it exclusively,
-                                // leading to a use-after-free on StaleFcb->FcbState below.
+                                // acquire must not block (IgnoreWait = TRUE), so it can
+                                // fail if a concurrent close/teardown already owns the
+                                // FCB. Track success via StaleFcbAcquired and never
+                                // dereference StaleFcb/StaleLcb below unless it's TRUE —
+                                // otherwise the concurrent owner could free StaleFcb
+                                // while we still believe we hold it, causing a
+                                // use-after-free. Rather than failing the whole rename
+                                // with STATUS_SHARING_VIOLATION, just stop tracking this
+                                // stale target on failure: the concurrent owner will
+                                // finish tearing it down by itself, and the on-disk
+                                // replace still proceeds normally via
+                                // UDFRenameMoveFile__.
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    // The concurrent owner (typically a delayed-close
-                                    // teardown) only holds this FCB briefly, so retry
-                                    // the non-blocking acquire a bounded number of times
-                                    // (this routine always runs with IRP_CONTEXT_FLAG_WAIT
-                                    // set, so it is safe to block here) before giving up.
-                                    // This lets the rename succeed in the common case
-                                    // instead of always failing with
-                                    // STATUS_SHARING_VIOLATION on transient contention.
-                                    ULONG StaleFcbRetry = 0;
-                                    while (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
-                                        if (++StaleFcbRetry > UDF_STALE_FCB_ACQUIRE_RETRY_COUNT) {
-                                            // Still could not synchronize with a
-                                            // concurrent close/cleanup of the stale
-                                            // target — bail out instead of touching it
-                                            // unsynchronized.
-                                            try_return(RC = STATUS_SHARING_VIOLATION);
-                                        }
-                                        LARGE_INTEGER StaleFcbRetryDelay;
-                                        // grow delay: 1ms, 2ms, 3ms, ...
-                                        StaleFcbRetryDelay.QuadPart = -((LONGLONG)StaleFcbRetry * 10000);
-                                        KeDelayExecutionThread(KernelMode, FALSE, &StaleFcbRetryDelay);
-                                    }
-                                    StaleFcbAcquired = TRUE;
+                                    StaleFcbAcquired = UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
                                 }
 
-                                // Cannot remove LCB that still has open references.
-                                if (StaleLcb->Reference != 0) {
+                                if (!StaleFcbAcquired) {
+                                    StaleFcb = NULL;
+                                    StaleLcb = NULL;
+                                } else if (StaleLcb->Reference != 0) {
 
+                                    // Cannot remove LCB that still has open references.
                                     try_return(RC = STATUS_ACCESS_DENIED);
                                 }
                             }
