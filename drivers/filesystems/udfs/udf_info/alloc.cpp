@@ -672,31 +672,31 @@ UDFFindMinSuitableExtent(
             }
         }
     } else {
-        // Legacy in-memory bitmap path
-        while(i<scanLim) {
-            ASSERT(i <= scanLim);
-            len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, scanLim);
-            if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
-                // free extent found
-                if (len >= Length) {
-                    // Accept the first suitable extent
-                    if (!best_len || (best_len > len)) {
-                        best_lba = i;
-                        best_len = len;
-                    }
-                    if (len == Length)
-                        break;
-                } else {
-                    // remember max extent
-                    if (max_len < len) {
-                        max_lba = i;
-                        max_len = len;
-                    }
+    // Legacy in-memory bitmap path
+    while(i<scanLim) {
+        ASSERT(i <= scanLim);
+        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, scanLim);
+        if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
+            // free extent found
+            if (len >= Length) {
+                // Accept the first suitable extent
+                if (!best_len || (best_len > len)) {
+                    best_lba = i;
+                    best_len = len;
                 }
-                if (best_len || (Vcb->CDR_Mode && max_len)) break;
+                if (len == Length)
+                    break;
+            } else {
+                // remember max extent
+                if (max_len < len) {
+                    max_lba = i;
+                    max_len = len;
+                }
             }
-            i += len;
+            if (best_len || (Vcb->CDR_Mode && max_len)) break;
         }
+        i += len;
+    }
     } // end legacy path
         if (best_len || (Vcb->CDR_Mode && max_len))
             break;
