@@ -755,7 +755,7 @@ struct VCB {
     ULONG           FSBM_ByteCount;
     // the following 2 fields are equal to NTIFS's RTL_BITMAP structure
     ULONG           FSBM_BitCount;
-    ULONG           ClusterHint;    // Starting LBN for free-space searches
+    ULONG           SectorHint;     // Starting LBN for free-space searches
     PCHAR           FSBM_Bitmap;     // 0 - free, 1 - used
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     PULONG          FSBM_Bitmap_owners; // 0 - free

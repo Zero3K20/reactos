@@ -553,7 +553,7 @@ UDFFindMinSuitableExtent(
     uint32 partRoot = Vcb->Partitions[0].PartitionRoot;
     uint32 lbnStart = SearchStart - partRoot;
     uint32 lbnLim = SearchLim - partRoot;
-    uint32 hint = Vcb->ClusterHint;
+    uint32 hint = Vcb->SectorHint;
     ULONG pass;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
@@ -946,11 +946,11 @@ UDFMarkSpaceAsXXXNoProtect_(
         uint32 lbn = lba - partRoot;
 
         if (asUsed) {
-            Vcb->ClusterHint = lbn + len;
-            if (Vcb->ClusterHint >= Vcb->FSBM_BitCount)
-                Vcb->ClusterHint = 0;
-        } else if (lbn < Vcb->ClusterHint) {
-            Vcb->ClusterHint = lbn;
+            Vcb->SectorHint = lbn + len;
+            if (Vcb->SectorHint >= Vcb->FSBM_BitCount)
+                Vcb->SectorHint = 0;
+        } else if (lbn < Vcb->SectorHint) {
+            Vcb->SectorHint = lbn;
         }
 
         // mark frag as XXX (see asUsed parameter)
