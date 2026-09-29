@@ -107,6 +107,4 @@ typedef CSHORT NODE_BYTE_SIZE;
 #define MEM_ALLOC_CACHE_TAG     'hcCA'
 #define TAG_FILE_SET_DESC       'tfdU'
 #define TAG_SEARCH_EXPR         'sfdU'
-#define TAG_FSBM_BITMAP         'bfdU'
-
 #endif // _NODETYPE_

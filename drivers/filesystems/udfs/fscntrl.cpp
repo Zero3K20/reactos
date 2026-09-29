@@ -678,29 +678,14 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Vat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
-    // Teardown bitmap cache stream (per-page mode) or free NonPagedPool buffer (legacy)
+    // Teardown bitmap cache stream
     UDFUnpinBitmapPage(Vcb);
     UDFDeleteBitmapStream(Vcb);
-    if (Vcb->FSBM_Bitmap) {
-        DbgFreePool(Vcb->FSBM_Bitmap);
-        Vcb->FSBM_Bitmap = NULL;
-    }
 
     if (Vcb->BSBM_Bitmap) {
         DbgFreePool(Vcb->BSBM_Bitmap);
         Vcb->BSBM_Bitmap = NULL;
     }
-#ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    if (Vcb->FSBM_Bitmap_owners) {
-        DbgFreePool(Vcb->FSBM_Bitmap_owners);
-        Vcb->FSBM_Bitmap_owners = NULL;
-    }
-#endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    if (Vcb->FSBM_OldBitmap) {
-        DbgFreePool(Vcb->FSBM_OldBitmap);
-        Vcb->FSBM_OldBitmap = NULL;
-    }
-
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);
 
     if (Vcb->ZBuffer) {
@@ -1386,11 +1371,7 @@ UDFGetVolumeBitmap(
 
         for(i=StartingCluster & ~7; i<lim; i++) {
             BOOLEAN isFree;
-            if (Vcb->BitmapFcb) {
-                isFree = UDFIsBitmapBitFree(Vcb, i);
-            } else {
-                isFree = UDFGetFreeBit((PULONG)(Vcb->FSBM_Bitmap), i);
-            }
+            isFree = UDFIsBitmapBitFree(Vcb, i);
             if (isFree)
                 UDFSetFreeBit(FSBM, i);
         }

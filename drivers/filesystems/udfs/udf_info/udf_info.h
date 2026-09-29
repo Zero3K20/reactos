@@ -303,11 +303,6 @@ __fastcall UDFDOSName100(IN OUT PUNICODE_STRING DosName,
                        IN PUNICODE_STRING UdfName,
                        IN BOOLEAN KeepIntact);
 
-// return length of bit-chain starting from Offs bit
-SIZE_T    UDFGetBitmapLen(
-                         uint32* Bitmap,
-                         SIZE_T Offs,
-                         SIZE_T Lim);
 // scan disc free space bitmap for minimal suitable extent
 SIZE_T    UDFFindMinSuitableExtent(IN PVCB Vcb,
                                    IN uint32 Length, // in blocks
@@ -509,18 +504,6 @@ UDFBuildFileEntry(
 // find reference partition number containing given physical sector
 uint32 __fastcall UDFGetRefPartNumByPhysLba(IN PVCB Vcb, IN uint32 Lba);
 
-NTSTATUS
-UDFAddXSpaceBitmap(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN uint32 PartNum,
-    IN PSHORT_AD bm
-    );
-
-// subtract given Bitmap to existing one
-NTSTATUS UDFDelXSpaceBitmap(IN PVCB Vcb,
-                            IN uint32 PartNum,
-                            IN PSHORT_AD bm);
 // build FreeSpaceBitmap (internal) according to media parameters & input data
 NTSTATUS
 UDFBuildFreeSpaceBitmap(
@@ -879,26 +862,6 @@ UDFCloseFile__(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo
-    );
-
-// load specified bitmap.
-NTSTATUS
-UDFPrepareXSpaceBitmap(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN OUT PSHORT_AD XSpaceBitmap,
-    IN OUT PEXTENT_INFO XSBMExtInfo,
-    IN OUT int8** XSBM,
-    IN OUT uint32* XSl
-    );
-
-// update Freed & Unallocated space bitmaps
-NTSTATUS
-UDFUpdateXSpaceBitmaps(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN uint32 PartNum,
-    IN PPARTITION_HEADER_DESC phd // partition header pointing to Bitmaps
     );
 
 // update Partition Desc & associated data structures
@@ -1425,34 +1388,6 @@ UDFDirIndex(
 #define UDFClrZeroBit(arr,bit)      UDFClrBit(arr,bit)
 #define UDFSetZeroBits(arr,bit,bc)  UDFSetBits(arr,bit,bc)
 #define UDFClrZeroBits(arr,bit,bc)  UDFClrBits(arr,bit,bc)
-
-#if defined UDF_DBG
-  #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    #define UDFSetFreeBitOwner(Vcb, i) (Vcb)->FSBM_Bitmap_owners[i] = 0;
-    #define UDFSetUsedBitOwner(Vcb, i, o) (Vcb)->FSBM_Bitmap_owners[i] = o;
-    #define UDFGetUsedBitOwner(Vcb, i) ((Vcb)->FSBM_Bitmap_owners[i])
-    #define UDFCheckUsedBitOwner(Vcb, i, o) { \
-      ASSERT(i<(Vcb)->FSBM_BitCount); \
-      if ((Vcb)->FSBM_Bitmap_owners[i] != -1) { \
-        ASSERT((Vcb)->FSBM_Bitmap_owners[i] == o); \
-      } else { \
-        ASSERT((Vcb)->FSBM_Bitmap_owners[i] != 0); \
-        (Vcb)->FSBM_Bitmap_owners[i] = o; \
-      } \
-    }
-    #define UDFCheckFreeBitOwner(Vcb, i) ASSERT((Vcb)->FSBM_Bitmap_owners[i] == 0);
-  #else
-    #define UDFSetFreeBitOwner(Vcb, i)
-    #define UDFSetUsedBitOwner(Vcb, i, o)
-    #define UDFCheckUsedBitOwner(Vcb, i, o)
-    #define UDFCheckFreeBitOwner(Vcb, i)
-  #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-#else
-    #define UDFSetFreeBitOwner(Vcb, i)
-    #define UDFSetUsedBitOwner(Vcb, i, o)
-    #define UDFCheckUsedBitOwner(Vcb, i, o)
-    #define UDFCheckFreeBitOwner(Vcb, i)
-#endif //UDF_DBG
 
 extern const char hexChar[];
 

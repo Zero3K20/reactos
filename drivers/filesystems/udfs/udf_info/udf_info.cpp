@@ -3100,7 +3100,7 @@ CrF__2:
 
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (  /*FileInfo->Fcb &&*/
-             (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
+             UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)) {
 
             if (!FileInfo->FileIdent ||
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
@@ -3313,7 +3313,7 @@ UDFCloseFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if (  FileInfo->Fcb &&
-         (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
+         UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)) {
 
         //ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
         if (UDFIsAStreamDir(FileInfo)) {
@@ -3340,7 +3340,7 @@ UDFCloseFile__(
         }
     } else {
         if (!FileInfo->Dloc->FELoc.Mapping[0].extLocation ||
-            (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
+            UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)) {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_FREE); // check if free
         } else {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED); // check if used
@@ -3406,7 +3406,7 @@ UDFCloseFile__(
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if ((FileInfo->Dloc->FileEntry->descVersion != 2) &&
        (FileInfo->Dloc->FileEntry->descVersion != 3)) {
-        ASSERT((Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)));
+        ASSERT(UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
@@ -4021,13 +4021,9 @@ err_vat_15:
         // sync VAT and FSBM (bitmap is LBN-indexed)
         for(i=0; i<len; i++) {
             if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, i);
-                    RtlSetBits(&Vcb->BitmapRtl, i - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-                }
+                UDFPinBitmapPage(Vcb, i);
+                RtlSetBits(&Vcb->BitmapRtl, i - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
             }
         }
         UDFUnpinBitmapPage(Vcb);
@@ -4037,24 +4033,16 @@ err_vat_15:
             for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++)
             {
                 ULONG lbn_pf = i - root;
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, lbn_pf);
-                    RtlSetBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, lbn_pf);
-                }
+                UDFPinBitmapPage(Vcb, lbn_pf);
+                RtlSetBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
             }
             for (j = 0; (j < 7) && (i < len); j++, i++)
             {
                 ULONG lbn_pf = i - root;
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, lbn_pf);
-                    RtlClearBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetUsedBit(Vcb->FSBM_Bitmap, lbn_pf);
-                }
+                UDFPinBitmapPage(Vcb, lbn_pf);
+                RtlClearBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
             }
         }
         UDFUnpinBitmapPage(Vcb);
@@ -4229,11 +4217,6 @@ retry_flush_FE:
         }
 #endif // UDF_DBG
     }
-/*    if (FileInfo->Fcb &&
-       ((FileInfo->Dloc->FELoc.Mapping[0].extLocation > Vcb->SessionEndLba) ||
-        (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) ) {
-        BrutePoint();
-    }*/
 /*    if (FileInfo->Dloc->FELoc.Mapping[0].extLocation) {
         ASSERT( FileInfo->Dloc->FileEntry->tagLocation ==
                (FileInfo->Dloc->FELoc.Mapping[0].extLocation - 0x580));
@@ -4474,8 +4457,8 @@ UDFFlushFile__(
         }
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
-    if ( FileInfo->Fcb &&
-        (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
+    if (FileInfo->Fcb &&
+        UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)) {
 
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
@@ -5190,11 +5173,7 @@ UDFRecordVAT(
     len = min(Vcb->VatCount, len);
     for(i=0; i<len; i++) {
         BOOLEAN isFree;
-        if (Vcb->BitmapFcb) {
-            isFree = UDFIsBitmapBitFree(Vcb, i);
-        } else {
-            isFree = UDFGetFreeBit(Vcb->FSBM_Bitmap, i);
-        }
+        isFree = UDFIsBitmapBitFree(Vcb, i);
         if (isFree)
             Vat[i] = UDF_VAT_FREE_ENTRY;
     }

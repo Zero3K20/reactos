@@ -44,256 +44,6 @@ UDFSetDstring(
     );
 
 /*
-    This routine loads specified bitmap.
-    It is also allocate space if the bitmap is not allocated.
- */
-NTSTATUS
-UDFPrepareXSpaceBitmap(
-    PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
- IN OUT PSHORT_AD XSpaceBitmap,
- IN OUT PEXTENT_INFO XSBMExtInfo,
- IN OUT int8** XSBM,
- IN OUT uint32* XSl
-    )
-{
-    uint32 BS, j, LBS;
-    uint32 plen;
-    NTSTATUS status;
-    EXTENT_MAP TmpExt;
-    lb_addr locAddr;
-    int8* _XSBM;
-    uint16 Ident;
-    uint32 RefPartNum;
-
-    if (!(XSpaceBitmap->extLength)) {
-        *XSl = 0;
-        *XSBM = NULL;
-        return STATUS_SUCCESS;
-    }
-
-    RefPartNum = Vcb->PartitionMaps - 1;
-    locAddr.partitionReferenceNum = (uint16)RefPartNum;
-    plen = UDFPartStart(Vcb, RefPartNum) + UDFPartLen(Vcb, RefPartNum);
-
-    BS = Vcb->SectorSize;
-    LBS = Vcb->SectorSize;
-
-    *XSl = sizeof(SPACE_BITMAP_DESC) + ((plen+7)>>3);
-    _XSBM = (int8*)DbgAllocatePool(NonPagedPool, (*XSl + BS - 1) & ~(BS-1) );
-    *XSBM = _XSBM;
-
-    switch (XSpaceBitmap->extLength >> 30) {
-    case EXTENT_RECORDED_ALLOCATED: {
-        locAddr.logicalBlockNum = XSpaceBitmap->extPosition;
-        *XSl = min(XSpaceBitmap->extLength, *XSl);
-        UDFPrint(("XSpaceBitmap->extLength=%x, *XSl=%x\n", XSpaceBitmap->extLength, *XSl));
-        // TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
-        TmpExt.extLength = XSpaceBitmap->extLength;
-        TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-        if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
-            BrutePoint();
-        }
-        XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
-        XSBMExtInfo->Offset = 0;
-        XSBMExtInfo->Length = *XSl;
-        break;
-    }
-    case EXTENT_NEXT_EXTENT_ALLOCDESC:
-    case EXTENT_NOT_RECORDED_NOT_ALLOCATED: {
-        // allocate space for bitmap
-        if (!NT_SUCCESS(status = UDFAllocFreeExtent(IrpContext, Vcb, *XSl,
-               UDFPartStart(Vcb, RefPartNum), UDFPartEnd(Vcb, RefPartNum), XSBMExtInfo, EXTENT_FLAG_ALLOC_SEQUENTIAL) ))
-            return status;
-        if (XSBMExtInfo->Mapping[1].extLength) {
-            UDFPrint(("Can't allocate space for Freed Space bitmap\n"));
-            *XSl = 0;
-        } else {
-            *XSl = (uint32)(XSBMExtInfo->Length);
-            XSpaceBitmap->extPosition = UDFPhysLbaToPart(Vcb, RefPartNum, XSBMExtInfo->Mapping[0].extLocation);
-        }
-        break;
-    }
-    case EXTENT_NOT_RECORDED_ALLOCATED: {
-        // record Alloc-Not-Rec
-        locAddr.logicalBlockNum = XSpaceBitmap->extPosition;
-        *XSl = min((XSpaceBitmap->extLength & UDF_EXTENT_LENGTH_MASK), *XSl);
-        TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
-        TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-        if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
-            BrutePoint();
-        }
-        XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
-        XSBMExtInfo->Offset = 0;
-        XSBMExtInfo->Length = *XSl;
-        break;
-    }
-    }
-
-    if (!_XSBM) {
-        BrutePoint();
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    switch (XSpaceBitmap->extLength >> 30) {
-    case EXTENT_RECORDED_ALLOCATED: {
-        // read descriptor & bitmap
-        if ((!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, *XSBM, (j = TmpExt.extLocation),
-                             locAddr.logicalBlockNum, &Ident))) ||
-           (Ident != TID_SPACE_BITMAP_DESC) ||
-           (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, XSBMExtInfo, 0, *XSl, FALSE, *XSBM))) ) {
-            if (NT_SUCCESS(status)) {
-                BrutePoint();
-                status = STATUS_FILE_CORRUPT_ERROR;
-            }
-            if (XSBMExtInfo->Mapping) {
-                MyFreePool__(XSBMExtInfo->Mapping);
-                XSBMExtInfo->Mapping = NULL;
-            }
-            DbgFreePool(*XSBM);
-            *XSl = 0;
-            *XSBM = NULL;
-            return status;
-        } else {
-//            BrutePoint();
-        }
-        return STATUS_SUCCESS;
-    }
-#if 0
-    case EXTENT_NEXT_EXTENT_ALLOCDESC:
-    case EXTENT_NOT_RECORDED_NOT_ALLOCATED:
-    case EXTENT_NOT_RECORDED_ALLOCATED: {
-        break;
-    }
-#endif
-    }
-
-    PSPACE_BITMAP_DESC XSDesc = (PSPACE_BITMAP_DESC)(*XSBM);
-
-    XSpaceBitmap->extLength = (*XSl + LBS -1) & ~(LBS-1);
-    RtlZeroMemory(*XSBM, *XSl);
-    XSDesc->descTag.tagIdent = TID_SPACE_BITMAP_DESC;
-    UDFSetUpTag(Vcb, &(XSDesc->descTag), 0, XSpaceBitmap->extPosition, 0);
-    XSDesc->numOfBits = plen;
-    XSDesc->numOfBytes = (*XSl)-sizeof(SPACE_BITMAP_DESC);
-
-    return STATUS_SUCCESS;
-} // end UDFPrepareXSpaceBitmap()
-
-/*
-    This routine updates Freed & Unallocated space bitmaps
- */
-NTSTATUS
-UDFUpdateXSpaceBitmaps(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN uint32 RefPartNum,
-    IN PPARTITION_HEADER_DESC phd // partition header pointing to Bitmaps
-    )
-{
-    uint32 i,j,d;
-    uint32 plen, pstart, pend;
-    int8* bad_bm;
-    int8* old_bm;
-    int8* new_bm;
-    int8* fpart_bm;
-    int8* upart_bm;
-    NTSTATUS status, status2;
-    int8* USBM=NULL;
-    int8* FSBM=NULL;
-    uint32 USl, FSl;
-    EXTENT_INFO FSBMExtInfo, USBMExtInfo;
-    SIZE_T WrittenBytes;
-
-    UDF_CHECK_BITMAP_RESOURCE(Vcb);
-
-    plen = UDFPartLen(Vcb, RefPartNum);
-    // prepare bitmaps for updating
-
-    status =  UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->unallocatedSpaceBitmap, &USBMExtInfo, &USBM, &USl);
-    status2 = UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->freedSpaceBitmap, &FSBMExtInfo, &FSBM, &FSl);
-    if (!NT_SUCCESS(status) ||
-       !NT_SUCCESS(status2)) {
-        BrutePoint();
-    }
-
-    pstart = UDFPartStart(Vcb, RefPartNum);
-    new_bm = Vcb->FSBM_Bitmap;
-    old_bm = Vcb->FSBM_OldBitmap;
-    bad_bm = Vcb->BSBM_Bitmap;
-
-    if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
-       (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
-        // try to recover insufficient resources
-        if (USl && USBMExtInfo.Mapping) {
-            USl -= sizeof(SPACE_BITMAP_DESC);
-            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, new_bm, &WrittenBytes);
-#ifdef UDF_DBG
-        } else {
-            UDFPrint(("Can't update USBM\n"));
-#endif // UDF_DBG
-        }
-        if (USBMExtInfo.Mapping) MyFreePool__(USBMExtInfo.Mapping);
-
-        if (FSl && FSBMExtInfo.Mapping) {
-            FSl -= sizeof(SPACE_BITMAP_DESC);
-            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, new_bm, &WrittenBytes);
-        } else {
-            status2 = status;
-            UDFPrint(("Can't update FSBM\n"));
-        }
-        if (FSBMExtInfo.Mapping) MyFreePool__(FSBMExtInfo.Mapping);
-    } else {
-        // normal way to record BitMaps
-        // Bitmap is LBN-indexed (0..PartitionLen), matching on-disk format
-        if (USBM) upart_bm =  USBM + sizeof(SPACE_BITMAP_DESC);
-        if (FSBM) fpart_bm =  FSBM + sizeof(SPACE_BITMAP_DESC);
-        pend = min(plen, Vcb->FSBM_BitCount);
-
-        d=1;
-        // if we have some bad bits, mark corresponding area as BAD
-        if (bad_bm) {
-            for(i=0; i<pend; i++) {
-                if (UDFGetBadBit(bad_bm, i)) {
-                    // TODO: would be nice to add these blocks to unallocatable space
-                    UDFSetUsedBits(new_bm, i & ~(d-1), d);
-                }
-            }
-        }
-        j=0;
-        for(i=0; i<pend; i+=d) {
-            if (UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
-                // sector was deallocated during last session
-                if (USBM) UDFSetFreeBit(upart_bm, j);
-                if (FSBM) UDFSetFreeBit(fpart_bm, j);
-            } else if (UDFGetUsedBit(new_bm, i)) {
-                // allocated
-                if (USBM) UDFSetUsedBit(upart_bm, j);
-                if (FSBM) UDFSetUsedBit(fpart_bm, j);
-            }
-            j++;
-        }
-        // flush updates
-        if (USBM) {
-            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, 0, USl, FALSE, USBM, &WrittenBytes);
-            DbgFreePool(USBM);
-            MyFreePool__(USBMExtInfo.Mapping);
-        }
-        if (FSBM) {
-            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, 0, FSl, FALSE, FSBM, &WrittenBytes);
-            DbgFreePool(FSBM);
-            MyFreePool__(FSBMExtInfo.Mapping);
-        } else {
-            status2 = status;
-        }
-    }
-
-    if (!NT_SUCCESS(status))
-        return status;
-    return status2;
-} // end UDFUpdateXSpaceBitmaps()
-
-/*
     This routine updates Partition Desc & associated data structures
  */
 NTSTATUS
@@ -327,14 +77,9 @@ UDFUpdatePartDesc(
                 UDFPrint(("freedSpaceTable (part %d)\n", i));
             }
 #endif // UDF_DBG
-            if (Vcb->BitmapFcb) {
-                // Per-page mode: flush dirty bitmap pages through Cache Manager
-                UDFUnpinBitmapPage(Vcb);
-                IO_STATUS_BLOCK FlushIoStatus;
-                CcFlushCache(&Vcb->BitmapNonpaged.SegmentObject, NULL, 0, &FlushIoStatus);
-            } else {
-                UDFUpdateXSpaceBitmaps(IrpContext, Vcb, i, phd);
-            }
+            UDFUnpinBitmapPage(Vcb);
+            IO_STATUS_BLOCK FlushIoStatus;
+            CcFlushCache(&Vcb->BitmapNonpaged.SegmentObject, NULL, 0, &FlushIoStatus);
             PTag = (tag*)Buf;
             UDFSetUpTag(Vcb, PTag, PTag->descCRCLength + sizeof(tag), PTag->tagLocation, 0);
             UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
@@ -990,20 +735,11 @@ UDFUmount__(
 #endif // UDF_DBG
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
-    // check if we should update BM
-    if (Vcb->BitmapFcb) {
-        // Per-page mode: use BitmapModified flag
-        if (Vcb->BitmapModified) {
-            flags |= 1;
-        } else {
-            flags &= ~1;
-        }
-    } else if (Vcb->FSBM_Bitmap && Vcb->FSBM_OldBitmap) {
-        if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
-            flags &= ~1;
-        } else {
-            flags |= 1;
-        }
+    // Check if we should update the bitmap.
+    if (Vcb->BitmapModified) {
+        flags |= 1;
+    } else {
+        flags &= ~1;
     }
 
 #ifdef UDF_DBG
@@ -1022,10 +758,6 @@ UDFUmount__(
     }
 
     if (flags & 1) {
-        if (!Vcb->BitmapFcb && Vcb->FSBM_Bitmap && Vcb->FSBM_OldBitmap) {
-            RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
-        }
-        // Per-page mode: no OldBitmap copy needed, BitmapModified cleared after flush
         Vcb->BitmapModified = FALSE;
     }
 
@@ -1645,86 +1377,6 @@ UDFLoadBogusLogicalVol(
     This routine adds given Bitmap to existing one
  */
 NTSTATUS
-UDFAddXSpaceBitmap(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN uint32 RefPartNum,
-    IN PSHORT_AD bm
-    )
-{
-    int8* tmp;
-    int8* tmp_bm;
-    uint32 i, lim, j, lba, l, lim2, l2, k;
-    lb_addr locAddr;
-    NTSTATUS status;
-    uint16 Ident;
-    uint32 flags;
-    SIZE_T Length;
-    BOOLEAN bit_set;
-
-    UDF_CHECK_BITMAP_RESOURCE(Vcb);
-    UDFPrint(("UDFAddXSpaceBitmap: at block=%x, partition=%d\n",
-        bm->extPosition,
-        RefPartNum));
-
-    if (!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
-    // Bitmap is LBN-indexed, start at 0
-    i=0;
-    flags = bm->extLength >> 30;
-    if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
-        tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->SectorSize));
-        if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-        locAddr.partitionReferenceNum = (uint16)RefPartNum;
-        locAddr.logicalBlockNum = bm->extPosition;
-        // read header of the Bitmap
-        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &locAddr),
-                             locAddr.logicalBlockNum, &Ident))) {
-err_addxsbm_1:
-            DbgFreePool(tmp);
-            return status;
-        }
-        if (Ident != TID_SPACE_BITMAP_DESC) {
-            status = STATUS_DISK_CORRUPT_ERROR;
-            goto err_addxsbm_1;
-        }
-
-        // read the whole Bitmap
-        if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE, ((uint64)lba)<<Vcb->SectorShift, Length, FALSE, tmp)))
-            goto err_addxsbm_1;
-
-        lim = min(i + (lim2 = ((PSPACE_BITMAP_DESC)tmp)->numOfBits), Vcb->FSBM_BitCount);
-        tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
-        j = 0;
-        for(;(l = UDFGetBitmapLen((uint32*)tmp_bm, j, lim2)) && (i<lim);) {
-            // expand LBlocks to Sectors...
-            l2 = l;
-            // ...and mark them
-            bit_set = UDFGetFreeBit(tmp_bm, j);
-            for(k=0;(k<l2) && (i<lim);k++) {
-                if (bit_set) {
-                    // FREE block
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-                    UDFSetFreeBitOwner(Vcb, i);
-                }
-                i++;
-            }
-            j += l;
-        }
-        DbgFreePool(tmp);
-/*    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-        i=Vcb->Partitions[RefPartNum].PartitionRoot;
-        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
-        for(;i<lim;i++) {
-            UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
-        }*/
-    }
-    return STATUS_SUCCESS;
-} // end UDFAddXSpaceBitmap()
-
-/*
-    This routine adds given Bitmap to existing one
- */
-NTSTATUS
 UDFVerifyXSpaceBitmap(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
@@ -1771,106 +1423,10 @@ err_vfyxsbm_1:
         if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE, ((uint64)lba)<<Vcb->SectorShift, Length, FALSE, tmp)))
             goto err_vfyxsbm_1;
 
-//        lim = min(i + ((lim2 = ((PSPACE_BITMAP_DESC)tmp)->numOfBits) << Vcb->LB2B_Bits), Vcb->FSBM_BitCount);
-//        tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
-//        j = 0;
-/*        for(;(l = UDFGetBitmapLen((uint32*)tmp_bm, j, lim2)) && (i<lim);) {
-            // expand LBlocks to Sectors...
-            l2 = l << Vcb->LB2B_Bits;
-            // ...and mark them
-            if (bm_type == UDF_FSPACE_BM) {
-                bit_set = UDFGetFreeBit(tmp_bm, j);
-                for(k=0;(k<l2) && (i<lim);k++) {
-                    if (bit_set) {
-                        // FREE block
-                        UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-                        UDFSetFreeBitOwner(Vcb, i);
-                        UDFSetZeroBit(Vcb->ZSBM_Bitmap, i);
-                    } else {
-                        // USED block
-                        UDFClrZeroBit(Vcb->ZSBM_Bitmap, i);
-                    }
-                    i++;
-                }
-            } else {
-                bit_set = UDFGetZeroBit(tmp_bm, j);
-                for(k=0;(k<l2) && (i<lim);k++) {
-                    if (bit_set) {
-                        // ZERO block
-                        UDFSetZeroBit(Vcb->ZSBM_Bitmap, i);
-                    } else {
-                        // DATA block
-                        UDFClrZeroBit(Vcb->ZSBM_Bitmap, i);
-                    }
-                    i++;
-                }
-            }
-            j += l;
-        }*/
         DbgFreePool(tmp);
-/*    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-        i=Vcb->Partitions[RefPartNum].PartitionRoot;
-        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
-        for(;i<lim;i++) {
-            UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
-        }*/
     }
     return STATUS_SUCCESS;
 } // end UDFVerifyXSpaceBitmap()
-
-/*
-    This routine subtracts given Bitmap to existing one
- */
-/*NTSTATUS
-UDFDelXSpaceBitmap(
-    IN PVCB Vcb,
-    IN uint32 RefPartNum,
-    IN PSHORT_AD bm
-    )
-{
-    int8* tmp, tmp_bm;
-    uint32 i, lim, j;
-    lb_addr locAddr;
-    NTSTATUS status;
-    uint16 Ident;
-    uint32 flags;
-    uint32 Length;
-
-    if (!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
-    i=0;
-    flags = bm->extLength >> 30;
-    if (!flags || flags == EXTENT_NOT_RECORDED_ALLOCATED) {
-        tmp = (int8*)MyAllocatePool__(NonPagedPool, Length);
-        if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-        locAddr.partitionReferenceNum = (uint16)RefPartNum;
-        locAddr.logicalBlockNum = bm->extPosition;
-        if ((!NT_SUCCESS(status = UDFReadTagged(Vcb, tmp, (j = UDFPartLbaToPhys(Vcb, &(locAddr))),
-                             locAddr.logicalBlockNum, &Ident))) ||
-           (Ident != TID_SPACE_BITMAP_DESC) ) {
-            MyFreePool__(tmp);
-            return status;
-        }
-        if (!NT_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)j)<<Vcb->BlockSizeBits, Length, FALSE, tmp))) {
-            MyFreePool__(tmp);
-            return status;
-        }
-        lim = i + ((PSPACE_BITMAP_DESC)tmp)->numOfBits;
-        tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
-        j = 0;
-        for(;i<lim;i++) {
-            if (UDFGetUsedBit(tmp_bm, j)) UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-            j++;
-        }
-        MyFreePool__(tmp);
-//    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-//        i=Vcb->Partitions[RefPartNum].PartitionRoot;
-//        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
-//        for(;i<lim;i++) {
-//            UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
-//        }
-    }
-    return STATUS_SUCCESS;
-} // end UDFDelXSpaceBitmap()  */
 
 /*
     This routine verifues FreeSpaceBitmap (internal) according to media
@@ -2005,37 +1561,11 @@ UDFBuildFreeSpaceBitmap(
     lb_addr locAddr;
     BOOLEAN UnallocSpaceExtent = FALSE;
 
-    if (!Vcb->FSBM_BitCount) {
-        // Bitmap is LBN-indexed: bit 0 = first sector of partition
-        uint32 bitmapLen = Vcb->Partitions[RefPartNum].PartitionLen;
+    if (!Vcb->BitmapFcb || !Vcb->FSBM_BitCount)
+        return STATUS_DISK_CORRUPT_ERROR;
 
-        if (!Vcb->BitmapFcb) {
-            // No bitmap stream — allocate NonPagedPool buffer (legacy path)
-            Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (bitmapLen+7)>>3) );
-            if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
-            RtlZeroMemory(Vcb->FSBM_Bitmap, i);
-            Vcb->FSBM_ByteCount = i;
-            Vcb->FSBM_BitCount = bitmapLen;
-        }
-        // else: FSBM_BitCount, ByteCount already set from bitmap stream header
-
-#ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-        Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_BitCount * sizeof(uint32));
-        if (!(Vcb->FSBM_Bitmap_owners)) {
-            goto free_fsbm;
-        }
-        RtlFillMemory(Vcb->FSBM_Bitmap_owners, Vcb->FSBM_BitCount * sizeof(uint32), 0xff);
-#endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    }
     // read info for partition header (if any)
     if (phd) {
-        if (!Vcb->BitmapFcb) {
-            // Legacy path: read bitmap from disk into NonPagedPool buffer
-            if (!NT_SUCCESS(status = UDFAddXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->unallocatedSpaceBitmap)))
-                return status;
-        }
-        // else: bitmap data already loaded from cache stream
-
         if (phd->unallocatedSpaceTable.extPosition ||
             phd->freedSpaceTable.extPosition ||
             phd->freedSpaceBitmap.extPosition ) {
@@ -2199,9 +1729,8 @@ UDFLoadPartDesc(
                         phd->freedSpaceBitmap.extPosition;
                     UDFPrint(("freedSpaceBitmap (part %d)\n", i));
                 }
-                // Create bitmap cache stream and CcPinRead BEFORE building
-                // the in-memory bitmap. This loads bitmap data from disk into
-                // the cache, so UDFAddXSpaceBitmap can be skipped.
+                // Create bitmap cache stream and CcPinRead before building the
+                // free-space bitmap.
                 if (phd->unallocatedSpaceBitmap.extLength &&
                     !(phd->unallocatedSpaceBitmap.extLength >> 30)) {
 
@@ -2212,58 +1741,60 @@ UDFLoadPartDesc(
                     ULONG bmPsn = UDFPartLbaToPhys(Vcb, &bmLocAddr);
                     ULONG bmLength = phd->unallocatedSpaceBitmap.extLength & UDF_EXTENT_LENGTH_MASK;
 
-                    if (bmPsn != LBA_OUT_OF_EXTENT) {
-                        RC = UDFCreateBitmapStream(IrpContext, Vcb, bmPsn, bmLength);
-                        if (NT_SUCCESS(RC)) {
-                            // Per-page CcPinRead: read SBD header to get bitmap sizes.
-                            // Actual bitmap data is accessed on demand via UDFPinBitmapPage.
-                            Vcb->BitmapDataOffset = sizeof(SPACE_BITMAP_DESC);
+                    if (bmPsn == LBA_OUT_OF_EXTENT ||
+                        bmLength < sizeof(SPACE_BITMAP_DESC)) {
+                        return STATUS_DISK_CORRUPT_ERROR;
+                    }
 
-                            PVOID pinBuf;
+                    RC = UDFCreateBitmapStream(IrpContext, Vcb, bmPsn, bmLength);
+                    if (!NT_SUCCESS(RC)) {
+                        return RC;
+                    }
+                    // Per-page CcPinRead: read SBD header to get bitmap sizes.
+                    // Actual bitmap data is accessed on demand via UDFPinBitmapPage.
+                    Vcb->BitmapDataOffset = sizeof(SPACE_BITMAP_DESC);
 
-                            _SEH2_TRY {
-                                // Pin first page to read the SBD header
-                                LARGE_INTEGER pinOfs;
-                                pinOfs.QuadPart = 0;
-                                ULONG pinLen = min((ULONG)BITMAP_PIN_GRANULARITY,
-                                    (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart);
-                                CcPinRead(Vcb->BitmapStreamFileObject,
-                                          &pinOfs, pinLen, TRUE,
-                                          &Vcb->BitmapBcb, &pinBuf);
-                            } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-                                RC = _SEH2_GetExceptionCode();
-                                pinBuf = NULL;
-                            } _SEH2_END;
+                    PVOID pinBuf = NULL;
 
-                            if (NT_SUCCESS(RC) && pinBuf) {
-                                PSPACE_BITMAP_DESC Sbd = (PSPACE_BITMAP_DESC)pinBuf;
-                                ULONG maxDataBytes = bmLength - sizeof(SPACE_BITMAP_DESC);
-                                Vcb->FSBM_ByteCount = min(Sbd->numOfBytes, maxDataBytes);
-                                Vcb->FSBM_BitCount = min(Sbd->numOfBits, Vcb->FSBM_ByteCount * 8);
+                    _SEH2_TRY {
+                        // Pin first page to read the SBD header
+                        LARGE_INTEGER pinOfs;
+                        pinOfs.QuadPart = 0;
+                        ULONG pinLen = min((ULONG)BITMAP_PIN_GRANULARITY,
+                            (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart);
+                        CcPinRead(Vcb->BitmapStreamFileObject,
+                                  &pinOfs, pinLen, TRUE,
+                                  &Vcb->BitmapBcb, &pinBuf);
+                    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+                        RC = _SEH2_GetExceptionCode();
+                    } _SEH2_END;
 
-                                // Store pinned page state
-                                Vcb->BitmapPinnedData = (PUCHAR)pinBuf;
-                                Vcb->BitmapPinnedOffset = 0;
-                                Vcb->BitmapPinnedLength = min((ULONG)BITMAP_PIN_GRANULARITY,
-                                    (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart);
+                    if (NT_SUCCESS(RC) && pinBuf) {
+                        PSPACE_BITMAP_DESC Sbd = (PSPACE_BITMAP_DESC)pinBuf;
+                        ULONG maxDataBytes = bmLength - sizeof(SPACE_BITMAP_DESC);
+                        Vcb->FSBM_ByteCount = min(Sbd->numOfBytes, maxDataBytes);
+                        Vcb->FSBM_BitCount = min(Sbd->numOfBits, Vcb->FSBM_ByteCount * 8);
 
-                                UDFPrint(("UDF BM: SBD numOfBits=%x numOfBytes=%x bmLength=%x\n",
-                                    Sbd->numOfBits, Sbd->numOfBytes, bmLength));
-                                UDFPrint(("UDF BM: FSBM_BitCount=%x FSBM_ByteCount=%x BitmapDataOffset=%x\n",
-                                    Vcb->FSBM_BitCount, Vcb->FSBM_ByteCount, Vcb->BitmapDataOffset));
+                        // Store pinned page state
+                        Vcb->BitmapPinnedData = (PUCHAR)pinBuf;
+                        Vcb->BitmapPinnedOffset = 0;
+                        Vcb->BitmapPinnedLength = min((ULONG)BITMAP_PIN_GRANULARITY,
+                            (ULONG)Vcb->BitmapFcb->Header.AllocationSize.QuadPart);
 
-                                // Unpin — data will be pinned on demand
-                                UDFUnpinBitmapPage(Vcb);
-                            } else {
-                                UDFPrint(("CcPinRead bitmap header failed: %x\n", RC));
-                                Vcb->BitmapBcb = NULL;
-                                UDFDeleteBitmapStream(Vcb);
-                                RC = STATUS_SUCCESS; // fall back to legacy
-                            }
-                        } else {
-                            UDFPrint(("UDFCreateBitmapStream failed: %x\n", RC));
-                            RC = STATUS_SUCCESS; // fall back to legacy path
-                        }
+                        UDFPrint(("UDF BM: SBD numOfBits=%x numOfBytes=%x bmLength=%x\n",
+                            Sbd->numOfBits, Sbd->numOfBytes, bmLength));
+                        UDFPrint(("UDF BM: FSBM_BitCount=%x FSBM_ByteCount=%x BitmapDataOffset=%x\n",
+                            Vcb->FSBM_BitCount, Vcb->FSBM_ByteCount, Vcb->BitmapDataOffset));
+
+                        // Unpin — data will be pinned on demand
+                        UDFUnpinBitmapPage(Vcb);
+                    } else {
+                        UDFPrint(("CcPinRead bitmap header failed: %x\n", RC));
+                        UDFUnpinBitmapPage(Vcb);
+                        UDFDeleteBitmapStream(Vcb);
+                        if (NT_SUCCESS(RC))
+                            RC = STATUS_INSUFFICIENT_RESOURCES;
+                        return RC;
                     }
                 }
 
@@ -3077,14 +2608,6 @@ UDFGetDiskInfoAndVerify(
 
         UDFLoadFileset(Vcb, FileSetDesc, &Vcb->RootLbAddr, &Vcb->SysStreamLbAddr);
 
-        if (!Vcb->BitmapFcb) {
-            // Legacy: keep a copy for delta comparison during flush
-            Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-            if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
-        }
-        // Per-page mode: no OldBitmap needed, dirty tracking via Cache Manager
-
 try_exit:   NOTHING;
     } _SEH2_FINALLY {
 
@@ -3098,4 +2621,3 @@ try_exit:   NOTHING;
     return(RC);
 
 } // end UDFGetDiskInfoAndVerify()
-

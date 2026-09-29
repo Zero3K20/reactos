@@ -751,18 +751,9 @@ struct VCB {
     uint32          SparingTableCount;
     uint32          SparingTableLength;
     uint32          SparingTableModified;
-    // free space bitmap
+    // Cached free-space bitmap size
     ULONG           FSBM_ByteCount;
-    // the following 2 fields are equal to NTIFS's RTL_BITMAP structure
     ULONG           FSBM_BitCount;
-    PCHAR           FSBM_Bitmap;     // 0 - free, 1 - used
-#ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    PULONG          FSBM_Bitmap_owners; // 0 - free
-    // -1 - used by unknown
-    // other - owner's FE location
-#endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-
-    PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 
@@ -1178,4 +1169,3 @@ typedef struct _CDROM_TOC_LARGE {
 } CDROM_TOC_LARGE;
 
 #endif /* _UDF_STRUCTURES_H_ */ // has this file been included?
-

@@ -2103,13 +2103,9 @@ UDFResizeExtent(
                     {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
                     uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
                     BOOLEAN _free;
-                    if (Vcb->BitmapFcb) {
-                        _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
-                        if (_free) s += UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s));
-                    } else {
-                        _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
-                        if (_free) s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s));
-                    }}
+                    _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                    if (_free) s += UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s));
+                    }
                     if (s==lim) {
                         // we can just increase the last frag
                         AdPrint(("Resize grow last Not-Rec (4)\n"));
@@ -2177,13 +2173,9 @@ UDFResizeExtent(
                         {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
                         uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
                         BOOLEAN _free;
-                        if (Vcb->BitmapFcb) {
-                            _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
-                            if (_free) s += (d = (ULONG)UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s)));
-                        } else {
-                            _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
-                            if (_free) s += (d = (ULONG)UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s)));
-                        }}
+                        _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                        if (_free) s += (d = (ULONG)UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s)));
+                        }
 
                         if (s==lim) {
                             AdPrint(("Resize grow last Rec (6)\n"));

@@ -631,7 +631,7 @@ UDFIndexDirectory(
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (!(FileId->fileCharacteristics & FILE_DELETED) &&
             (UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) != LBA_OUT_OF_EXTENT) &&
-             (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot))) {
+             UDFIsBitmapBitFree(Vcb, UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot)) {
 
             AdPrint(("Ref to Discarded block %x\n",UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) ));
             BrutePoint();
@@ -1303,4 +1303,3 @@ UDFInsertLinkedFile(
     fi->PrevLinkedFile->NextLinkedFile = fi;
     return;
 } // end UDFInsertLinkedFile()
-

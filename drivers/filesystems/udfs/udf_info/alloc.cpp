@@ -19,26 +19,6 @@
 
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO_ALLOC
 
-static const int8 bit_count_tab[] = {
-    0, 1, 1, 2, 1, 2, 2, 3,   1, 2, 2, 3, 2, 3, 3, 4,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    4, 5, 5, 6, 5, 6, 6, 7,   5, 6, 6, 7, 6, 7, 7, 8
-};
-
 /*
     RtlFindNextForwardRunSet — not exported by ReactOS ntoskrnl,
     but statically linked into MS udfs.sys. Same algorithm here.
@@ -474,62 +454,6 @@ UDFPartLen(
 } // end UDFPartLen()
 
 /*
-    This routine returns length of bit-chain starting from Offs bit in
-    array Bitmap. Bitmap scan is limited with Lim.
- */
-SIZE_T
-UDFGetBitmapLen(
-    uint32* Bitmap,
-    SIZE_T Offs,
-    SIZE_T Lim          // NOT included
-    )
-{
-    ASSERT(Offs <= Lim);
-    if (Offs >= Lim) {
-        return 0;//(Offs == Lim);
-    }
-
-    BOOLEAN bit = UDFGetBit(Bitmap, Offs);
-    SIZE_T i=Offs>>5;
-    SIZE_T len=0;
-    uint8 j=(uint8)(Offs&31);
-    uint8 lLim=(uint8)(Lim&31);
-
-    Lim = Lim>>5;
-
-    ASSERT((bit == 0) || (bit == 1));
-
-    uint32 a;
-
-    a = Bitmap[i] >> j;
-
-    while(i<=Lim) {
-
-        while( j < ((i<Lim) ? 32 : lLim) ) {
-            if ( ((BOOLEAN)(a&1)) != bit)
-                return len;
-            len++;
-            a>>=1;
-            j++;
-        }
-        j=0;
-While_3:
-        i++;
-        if (i > Lim) break;
-        a = Bitmap[i];
-
-        if (i<Lim) {
-            if ((bit && (a==0xffffffff)) ||
-               (!bit && !a)) {
-                len+=32;
-                goto While_3;
-            }
-        }
-    }
-    return len;
-} // end UDFGetBitmapLen()
-
-/*
     This routine scans disc free space Bitmap for minimal suitable extent.
     It returns maximal available extent if no long enough extents found.
  */
@@ -543,7 +467,6 @@ UDFFindMinSuitableExtent(
     IN uint8  AllocFlags
     )
 {
-    SIZE_T i, len;
     SIZE_T best_lba=0;
     SIZE_T best_len=0;
     SIZE_T max_lba=0;
@@ -559,8 +482,7 @@ UDFFindMinSuitableExtent(
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    i=lbnStart;
-    if (Vcb->BitmapFcb) {
+    {
         // Per-page scanning using RTL_BITMAP with cross-page run tracking
         ULONG CurrentRunStart = 0;
         ULONG CurrentRunLength = 0;
@@ -638,33 +560,7 @@ UDFFindMinSuitableExtent(
                 max_len = CurrentRunLength;
             }
         }
-    } else {
-    // Legacy in-memory bitmap path
-    while(i<lbnLim) {
-        ASSERT(i <= lbnLim);
-        len = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), i, lbnLim);
-        if (UDFGetFreeBit((uint32*)(Vcb->FSBM_Bitmap), i)) {
-            // free extent found
-            if (len >= Length) {
-                // minimize extent length
-                if (!best_len || (best_len > len)) {
-                    best_lba = i;
-                    best_len = len;
-                }
-                if (len == Length)
-                    break;
-            } else {
-                // remember max extent
-                if (max_len < len) {
-                    max_lba = i;
-                    max_len = len;
-                }
-            }
-            if (Vcb->CDR_Mode) break;
-        }
-        i += len;
     }
-    } // end legacy path
     UDFUnpinBitmapPage(Vcb);
     if (!best_len && !max_len) {
         UDFPrint(("UDF BM: FindMinSuitable: NO FREE SPACE lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
@@ -772,7 +668,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
-                if (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, lbn+j) : !UDFGetUsedBit(Vcb->FSBM_Bitmap, lbn+j)) {
+                if (UDFIsBitmapBitFree(Vcb, lbn+j)) {
                     BrutePoint();
                     AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
                     break;
@@ -788,7 +684,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
-                if (Vcb->BitmapFcb ? !UDFIsBitmapBitFree(Vcb, lbn+j) : !UDFGetFreeBit(Vcb->FSBM_Bitmap, lbn+j)) {
+                if (!UDFIsBitmapBitFree(Vcb, lbn+j)) {
                     BrutePoint();
                     AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
                     break;
@@ -813,21 +709,14 @@ UDFMarkBadSpaceAsUsed(
 #define BIT_C   (sizeof(Vcb->BSBM_Bitmap[0])*8)
     len = (lba+len+BIT_C-1)/BIT_C;
     if (Vcb->BSBM_Bitmap) {
-        if (Vcb->BitmapFcb) {
-            // Per-page: AND bad-block mask into pinned bitmap data
-            for(j=lba/BIT_C; j<len; j++) {
-                if (Vcb->BSBM_Bitmap[j]) {
-                    UDFPinBitmapPage(Vcb, j * BIT_C);
-                    ULONG byteOff = (j * BIT_C - Vcb->BitmapPageStartLbn) / 8;
-                    // Access raw pinned data for bad-block masking
-                    PUCHAR rawData = (PUCHAR)Vcb->BitmapRtl.Buffer;
-                    rawData[byteOff] &= ~Vcb->BSBM_Bitmap[j];
-                    UDFDirtyBitmapPage(Vcb);
-                }
-            }
-        } else {
-            for(j=lba/BIT_C; j<len; j++) {
-                Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
+        for(j=lba/BIT_C; j<len; j++) {
+            if (Vcb->BSBM_Bitmap[j]) {
+                UDFPinBitmapPage(Vcb, j * BIT_C);
+                ULONG byteOff = (j * BIT_C - Vcb->BitmapPageStartLbn) / 8;
+                // Access raw pinned data for bad-block masking
+                PUCHAR rawData = (PUCHAR)Vcb->BitmapRtl.Buffer;
+                rawData[byteOff] &= ~Vcb->BSBM_Bitmap[j];
+                UDFDirtyBitmapPage(Vcb);
             }
         }
     }
@@ -912,21 +801,17 @@ UDFMarkSpaceAsXXXNoProtect_(
         // mark frag as XXX (see asUsed parameter)
         if (asUsed) {
             ASSERT(len);
-            if (Vcb->BitmapFcb) {
-                // Per-page: clear bits (used = 0) across page boundaries
-                ULONG remaining = len;
-                ULONG pos = lbn;
-                while (remaining > 0) {
-                    UDFPinBitmapPage(Vcb, pos);
-                    ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
-                    ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
-                    RtlClearBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
-                    UDFDirtyBitmapPage(Vcb);
-                    pos += bitsInPage;
-                    remaining -= bitsInPage;
-                }
-            } else {
-                UDFSetUsedBits(Vcb->FSBM_Bitmap, lbn, len);
+            // Per-page: clear bits (used = 0) across page boundaries
+            ULONG remaining = len;
+            ULONG pos = lbn;
+            while (remaining > 0) {
+                UDFPinBitmapPage(Vcb, pos);
+                ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
+                ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
+                RtlClearBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
+                UDFDirtyBitmapPage(Vcb);
+                pos += bitsInPage;
+                remaining -= bitsInPage;
             }
 
             if (Vcb->Vat) {
@@ -940,21 +825,17 @@ UDFMarkSpaceAsXXXNoProtect_(
             }
         } else {
             ASSERT(len);
-            if (Vcb->BitmapFcb) {
-                // Per-page: set bits (free = 1) across page boundaries
-                ULONG remaining = len;
-                ULONG pos = lbn;
-                while (remaining > 0) {
-                    UDFPinBitmapPage(Vcb, pos);
-                    ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
-                    ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
-                    RtlSetBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
-                    UDFDirtyBitmapPage(Vcb);
-                    pos += bitsInPage;
-                    remaining -= bitsInPage;
-                }
-            } else {
-                UDFSetFreeBits(Vcb->FSBM_Bitmap, lbn, len);
+            // Per-page: set bits (free = 1) across page boundaries
+            ULONG remaining = len;
+            ULONG pos = lbn;
+            while (remaining > 0) {
+                UDFPinBitmapPage(Vcb, pos);
+                ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
+                ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
+                RtlSetBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
+                UDFDirtyBitmapPage(Vcb);
+                pos += bitsInPage;
+                remaining -= bitsInPage;
             }
             if (asXXX & AS_BAD) {
                 UDFSetBits(Vcb->BSBM_Bitmap, lbn, len);
@@ -1148,31 +1029,22 @@ UDFGetPartFreeSpace(
 {
     uint32 s=0;
 
-    if (Vcb->BitmapFcb) {
-        // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
-        ULONG pos = 0;
-        while (pos < Vcb->FSBM_BitCount) {
-            UDFPinBitmapPage(Vcb, pos);
-            ULONG bits = Vcb->BitmapPageBitCount;
-            ULONG startLbn = Vcb->BitmapPageStartLbn;
-            ULONG bufWords = (bits + 31) / 32;
-            ULONG dataBytes = (Vcb->BitmapRtl.SizeOfBitMap + 7) / 8;
-            if (bufWords * 4 > Vcb->BitmapPinnedLength) {
-                UDFPrint(("UDF BM: FreeSpace OVERFLOW pos=%x bits=%x need=%x pinLen=%x pinOff=%x\n",
-                    pos, bits, bufWords * 4, Vcb->BitmapPinnedLength, Vcb->BitmapPinnedOffset));
-                break;
-            }
-            s += RtlNumberOfSetBits(&Vcb->BitmapRtl);
-            pos = startLbn + bits;
+    // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
+    ULONG pos = 0;
+    while (pos < Vcb->FSBM_BitCount) {
+        UDFPinBitmapPage(Vcb, pos);
+        ULONG bits = Vcb->BitmapPageBitCount;
+        ULONG startLbn = Vcb->BitmapPageStartLbn;
+        ULONG bufWords = (bits + 31) / 32;
+        if (bufWords * 4 > Vcb->BitmapPinnedLength) {
+            UDFPrint(("UDF BM: FreeSpace OVERFLOW pos=%x bits=%x need=%x pinLen=%x pinOff=%x\n",
+                pos, bits, bufWords * 4, Vcb->BitmapPinnedLength, Vcb->BitmapPinnedOffset));
+            break;
         }
-        UDFUnpinBitmapPage(Vcb);
-    } else {
-        PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
-        ULONG lim = (Vcb->FSBM_BitCount+7)/8;
-        for(ULONG j=0; j<lim; j++) {
-            s+=bit_count_tab[cur[j]];
-        }
+        s += RtlNumberOfSetBits(&Vcb->BitmapRtl);
+        pos = startLbn + bits;
     }
+    UDFUnpinBitmapPage(Vcb);
     return s;
 } // end UDFGetPartFreeSpace()
 
@@ -1184,18 +1056,12 @@ UDFGetFreeSpace(
 {
     int64 s=0;
     uint32 i;
-//    uint32* cur = (uint32*)(Vcb->FSBM_Bitmap);
-
     if (!Vcb->CDR_Mode) {
-        if (Vcb->BitmapFcb) {
-            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
-        }
+        UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
         for(i=0;i<Vcb->PartitionMaps;i++) {
             s += UDFGetPartFreeSpace(Vcb, i);
         }
-        if (Vcb->BitmapFcb) {
-            UDFReleaseResource(&(Vcb->BitMapResource1));
-        }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
     } else {
         ASSERT(Vcb->FSBM_BitCount >= max(Vcb->NWA, Vcb->SessionEndLba));
         s = Vcb->FSBM_BitCount - max(Vcb->NWA, Vcb->SessionEndLba);
