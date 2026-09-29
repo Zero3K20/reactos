@@ -554,7 +554,8 @@ UDFFindMinSuitableExtent(
     uint32 lbnStart = SearchStart - partRoot;
     uint32 lbnLim = SearchLim - partRoot;
 
-    ASSERT(ExIsResourceAcquiredExclusiveLite(&(Vcb->BitMapResource1)));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&(Vcb->BitMapResource1)) ||
+           ExIsResourceAcquiredSharedLite(&(Vcb->BitMapResource1)));
 
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
@@ -1046,14 +1047,18 @@ UDFAllocFreeExtent_(
 
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
-
     if (blen > (SearchLim - SearchStart)) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         goto no_free_space_err;
     }
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
+        if (Vcb->BitmapFcb) {
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+        } else {
+            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
+        }
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
                                                                SearchLim, &len, AllocFlags);
 
@@ -1081,22 +1086,54 @@ no_free_space_err:
             AdPrint(("  DISK_FULL\n"));
             return STATUS_DISK_FULL;
         }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+
         // append the frag found to mapping
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
+        // Recheck the candidate while reserving it. Another shared scanner
+        // may have claimed part of the extent since the scan completed.
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+        BOOLEAN stillFree = TRUE;
+        for (uint32 j = 0; j < len; j++) {
+            uint32 lbn = (Ext.extLocation - Vcb->Partitions[0].PartitionRoot) + j;
+            if (Vcb->BitmapFcb) {
+                if (!UDFIsBitmapBitFree(Vcb, lbn)) {
+                    stillFree = FALSE;
+                    break;
+                }
+            } else if (!UDFGetFreeBit((uint32*)Vcb->FSBM_Bitmap, lbn)) {
+                stillFree = FALSE;
+                break;
+            }
+        }
+        if (!stillFree) {
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+            continue;
+        }
+        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_USED); // reserve
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
-            if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
+            if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation,
+                              (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh)) {
                 AdPrint(("newly allocated extent contains BB\n"));
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED); // free
+                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation,
+                                      (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh); // bad -> bad+used
+                if (ExtInfo->Mapping) {
+                    UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
+                }
+                UDFReleaseResource(&(Vcb->BitMapResource1));
                 // roll back
-                blen += Ext.extLength>>BSh;
+                blen += (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh;
                 continue;
             }
         }
 
-        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
         if (!(ExtInfo->Mapping)) {
             // create new
 #ifdef UDF_TRACK_ALLOC_FREE_EXTENT
@@ -1106,32 +1143,35 @@ no_free_space_err:
 #endif // UDF_TRACK_ALLOC_FREE_EXTENT
             if (!ExtInfo->Mapping) {
                 BrutePoint();
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = 0;
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED); // used
         } else {
             // update existing
             Map = UDFExtentToMapping(&Ext);
             if (!Map) {
                 BrutePoint();
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = UDFGetExtentLength(ExtInfo->Mapping);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED); // used
             ExtInfo->Mapping = UDFMergeMappings(ExtInfo->Mapping, Map);
             MyFreePool__(Map);
         }
         if (!ExtInfo->Mapping) {
             BrutePoint();
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &Ext, AS_DISCARDED);
             UDFReleaseResource(&(Vcb->BitMapResource1));
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
     return STATUS_SUCCESS;
 } // end UDFAllocFreeExtent_()
