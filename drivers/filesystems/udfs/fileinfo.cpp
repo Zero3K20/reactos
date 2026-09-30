@@ -1965,7 +1965,10 @@ UDFSetRenameInfo(
     BOOLEAN TargetParentFcbAcquired = FALSE;
     BOOLEAN StaleFcbAcquired = FALSE;
     PFCB StaleFcb = NULL;
+    FILE_ID StaleFileId = {0};
+    BOOLEAN StaleFileIdValid = FALSE;
     PLCB StaleLcb = NULL;
+    BOOLEAN StaleTargetDeleted = FALSE;
     BOOLEAN NeedRemovePrefix = FALSE;
     BOOLEAN SingleDir = TRUE;
 
@@ -2230,6 +2233,8 @@ UDFSetRenameInfo(
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
                                     if (UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
                                         StaleFcbAcquired = TRUE;
+                                        StaleFileId = StaleFcb->FileId;
+                                        StaleFileIdValid = TRUE;
                                     } else {
                                         StaleFcb = NULL;
                                         StaleLcb = NULL;
@@ -2273,16 +2278,20 @@ UDFSetRenameInfo(
                 }
             }
 
-            RC = UDFRenameMoveFile__(IrpContext, Vcb, IgnoreCase, &ReplaceIfExists, &NewName, DirInfo, TargetDirInfo, FileInfo);
+            RC = UDFRenameMoveFile__(IrpContext, Vcb, IgnoreCase, &ReplaceIfExists, &NewName, DirInfo, TargetDirInfo, FileInfo, &StaleTargetDeleted);
         }
         if (!NT_SUCCESS(RC)) {
             // Rename failed — restore original state if target was not
             // actually deleted on disk.
-            if (StaleLcb && !(StaleFcb && (StaleFcb->FcbState & UDF_FCB_DELETED))) {
-                ClearFlag(StaleLcb->Flags, UDF_LCB_FLAG_LINK_DELETED);
-                // Re-insert into splay trees (was removed before rename attempt)
-                if (StaleLcb->ParentFcb) {
-                    UdfInsertNameLinks(StaleLcb->ParentFcb, StaleLcb);
+            if (StaleLcb) {
+                if (StaleTargetDeleted) {
+                    NeedRemovePrefix = TRUE;
+                } else {
+                    ClearFlag(StaleLcb->Flags, UDF_LCB_FLAG_LINK_DELETED);
+                    // Re-insert into splay trees (was removed before rename attempt)
+                    if (StaleLcb->ParentFcb) {
+                        UdfInsertNameLinks(StaleLcb->ParentFcb, StaleLcb);
+                    }
                 }
             }
             try_return (RC);
@@ -2373,12 +2382,12 @@ try_exit:    NOTHING;
                     }
                 }
             }
-            if (StaleFcb) {
+            if (StaleFileIdValid) {
                 UDFLockFcbTable(IrpContext, Vcb);
                 UDFLockVcb(IrpContext, Vcb);
                 {
                     struct { FILE_ID FileId; PFCB Fcb; } _Key;
-                    _Key.FileId = StaleFcb->FileId;
+                    _Key.FileId = StaleFileId;
                     RtlDeleteElementGenericTable(&Vcb->FcbTable, &_Key);
                 }
                 UDFUnlockVcb(IrpContext, Vcb);
