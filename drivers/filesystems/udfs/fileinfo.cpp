@@ -2099,7 +2099,9 @@ UDFSetRenameInfo(
 
         //
         // Always acquire source parent directory — needed for splay tree
-        // modifications in UDFRenameMovePrefix and UDFRemovePrefix.
+        // modifications in UDFRenameMovePrefix and UDFRemovePrefix. Holding
+        // the parent resources also pins any LCB found in their child queues
+        // until the rename's finally handler removes it.
         //
         if (SingleDir) {
 
@@ -2225,7 +2227,10 @@ UDFSetRenameInfo(
 
                                 StaleFcb = StaleLcb->ChildFcb;
 
-                                // Acquire target FCB to serialize with cleanup
+                                // The target FCB resource is its temporary
+                                // lifetime pin. Try-only is required because
+                                // teardown acquires child before parent, while
+                                // this routine already holds the parent.
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
                                     if (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
