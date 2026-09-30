@@ -181,7 +181,7 @@ UDFCommonClose(
 
                     // Possible dismount.  Acquire CdData to synchronise with the remount path
                     // before looking at the vcb condition again.
- 
+
                     UDFAcquireUdfData(IrpContext);
 
                     if ((Vcb->VcbCleanup == 0) &&
@@ -266,7 +266,7 @@ UDFTeardownStructures(
     }
 
     // Use a try-finally to safely clear the top-level field.
- 
+
     _SEH2_TRY {
 
         //  Loop until we find an Fcb we can't remove.
@@ -856,7 +856,7 @@ Return Value:
         //  to do here is prevent this routine starving other threads which
         //  may need this Vcb exclusively.
         //
-        //  Note that the check for potential teardown below is unsafe.  We'll 
+        //  Note that the check for potential teardown below is unsafe.  We'll
         //  repeat later within the cddata lock.
 
         PotentialVcbTeardown = !ARGUMENT_PRESENT( Vcb ) &&
@@ -884,7 +884,7 @@ Return Value:
                                        (Fcb->Vcb->VcbCondition != VcbMounted) &&
                                        (Fcb->Vcb->VcbCondition != VcbMountInProgress) &&
                                        (Fcb->Vcb->VcbCleanup == 0);
-                                
+                               
                 if (!PotentialVcbTeardown)  {
 
                     UDFReleaseUdfData(IrpContext);
@@ -894,7 +894,7 @@ Return Value:
             CurrentVcb = Fcb->Vcb;
 
             _Analysis_assume_(CurrentVcb != NULL);
-            
+           
             UDFAcquireVcbShared(IrpContext, CurrentVcb, FALSE);
 
             VcbHoldCount = 0;
