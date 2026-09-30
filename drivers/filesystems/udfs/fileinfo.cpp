@@ -1964,6 +1964,8 @@ UDFSetRenameInfo(
     BOOLEAN ParentFcbAcquired = FALSE;
     BOOLEAN TargetParentFcbAcquired = FALSE;
     BOOLEAN StaleFcbAcquired = FALSE;
+    BOOLEAN StaleFcbReferenced = FALSE;
+    BOOLEAN StaleLcbReferenced = FALSE;
     PFCB StaleFcb = NULL;
     PLCB StaleLcb = NULL;
     BOOLEAN NeedRemovePrefix = FALSE;
@@ -2225,18 +2227,32 @@ UDFSetRenameInfo(
 
                                 StaleFcb = StaleLcb->ChildFcb;
 
-                                // Acquire target FCB to serialize with cleanup
-                                if (StaleFcb) {
-                                    UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
-                                    StaleFcbAcquired = TRUE;
-                                }
-
-                                // Cannot remove LCB that still has open references.
+                                // Pin the stale link and FCB before attempting
+                                // to acquire the target resource. Teardown may
+                                // otherwise remove either object while the
+                                // replacement operation is in progress.
                                 if (StaleLcb->Reference != 0) {
 
                                     try_return(RC = STATUS_ACCESS_DENIED);
                                 }
+
+                                InterlockedIncrement((PLONG)&StaleLcb->Reference);
+                                StaleLcbReferenced = TRUE;
+
+                                // Acquire target FCB to serialize with cleanup
+                                if (StaleFcb) {
+                                    UDFLockVcb(IrpContext, Vcb);
+                                    UDFIncrementReferenceCounts(IrpContext, StaleFcb, 1, 0);
+                                    UDFUnlockVcb(IrpContext, Vcb);
+                                    StaleFcbReferenced = TRUE;
+
+                                    UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
+                                    if (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        try_return(RC = STATUS_ACCESS_DENIED);
+                                    }
+                                    StaleFcbAcquired = TRUE;
+                                }
+
                             }
                         }
                     }
@@ -2361,6 +2377,7 @@ try_exit:    NOTHING;
         if (NeedRemovePrefix) {
             if (StaleLcb->ParentFcbLinks.Flink != &StaleLcb->ParentFcbLinks) {
                 UDFRemovePrefix(IrpContext, StaleLcb);
+                StaleLcbReferenced = FALSE;
             }
             if (StaleFcb) {
                 UDFLockFcbTable(IrpContext, Vcb);
@@ -2376,6 +2393,14 @@ try_exit:    NOTHING;
         }
         if (StaleFcbAcquired) {
             UDFReleaseFcb(IrpContext, StaleFcb);
+        }
+        if (StaleFcbReferenced) {
+            UDFLockVcb(IrpContext, Vcb);
+            UDFDecrementReferenceCounts(IrpContext, StaleFcb, 1, 0);
+            UDFUnlockVcb(IrpContext, Vcb);
+        }
+        if (StaleLcbReferenced) {
+            UDFReleasePrefix(IrpContext, StaleLcb);
         }
         if (TargetParentFcbAcquired) {
             UDFReleaseFcb(IrpContext, TargetDirInfo->Fcb);
