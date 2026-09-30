@@ -1964,8 +1964,13 @@ UDFSetRenameInfo(
     BOOLEAN ParentFcbAcquired = FALSE;
     BOOLEAN TargetParentFcbAcquired = FALSE;
     BOOLEAN StaleFcbAcquired = FALSE;
+    BOOLEAN StaleFcbReferenceAdded = FALSE;
     PFCB StaleFcb = NULL;
+    FILE_ID StaleFileId = {0};
+    BOOLEAN StaleFileIdValid = FALSE;
     PLCB StaleLcb = NULL;
+    BOOLEAN StaleLcbReferenceAdded = FALSE;
+    BOOLEAN StaleTargetDeleted = FALSE;
     BOOLEAN NeedRemovePrefix = FALSE;
     BOOLEAN SingleDir = TRUE;
 
@@ -2228,14 +2233,27 @@ UDFSetRenameInfo(
                                 // Acquire target FCB to serialize with cleanup
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
-                                    StaleFcbAcquired = TRUE;
-                                }
+                                    if (UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        StaleFcbAcquired = TRUE;
+                                        StaleFileId = StaleFcb->FileId;
+                                        StaleFileIdValid = TRUE;
 
-                                // Cannot remove LCB that still has open references.
-                                if (StaleLcb->Reference != 0) {
-
-                                    try_return(RC = STATUS_ACCESS_DENIED);
+                                        // Pin the FCB and LCB so teardown cannot free
+                                        // either while replacement is in progress.
+                                        UDFLockVcb(IrpContext, Vcb);
+                                        if (StaleLcb->Reference != 0) {
+                                            UDFUnlockVcb(IrpContext, Vcb);
+                                            try_return(RC = STATUS_ACCESS_DENIED);
+                                        }
+                                        StaleLcb->Reference++;
+                                        StaleLcbReferenceAdded = TRUE;
+                                        StaleFcb->FcbReference++;
+                                        StaleFcbReferenceAdded = TRUE;
+                                        UDFUnlockVcb(IrpContext, Vcb);
+                                    } else {
+                                        StaleFcb = NULL;
+                                        StaleLcb = NULL;
+                                    }
                                 }
                             }
                         }
@@ -2269,16 +2287,20 @@ UDFSetRenameInfo(
                 }
             }
 
-            RC = UDFRenameMoveFile__(IrpContext, Vcb, IgnoreCase, &ReplaceIfExists, &NewName, DirInfo, TargetDirInfo, FileInfo);
+            RC = UDFRenameMoveFile__(IrpContext, Vcb, IgnoreCase, &ReplaceIfExists, &NewName, DirInfo, TargetDirInfo, FileInfo, &StaleTargetDeleted);
         }
         if (!NT_SUCCESS(RC)) {
             // Rename failed — restore original state if target was not
             // actually deleted on disk.
-            if (StaleLcb && !(StaleFcb && (StaleFcb->FcbState & UDF_FCB_DELETED))) {
-                ClearFlag(StaleLcb->Flags, UDF_LCB_FLAG_LINK_DELETED);
-                // Re-insert into splay trees (was removed before rename attempt)
-                if (StaleLcb->ParentFcb) {
-                    UdfInsertNameLinks(StaleLcb->ParentFcb, StaleLcb);
+            if (StaleLcb) {
+                if (StaleTargetDeleted) {
+                    NeedRemovePrefix = TRUE;
+                } else {
+                    ClearFlag(StaleLcb->Flags, UDF_LCB_FLAG_LINK_DELETED);
+                    // Re-insert into splay trees (was removed before rename attempt)
+                    if (StaleLcb->ParentFcb) {
+                        UdfInsertNameLinks(StaleLcb->ParentFcb, StaleLcb);
+                    }
                 }
             }
             try_return (RC);
@@ -2290,9 +2312,6 @@ UDFSetRenameInfo(
         //
         if (StaleLcb) {
             NeedRemovePrefix = TRUE;
-            if (StaleFcb) {
-                StaleFcb->FcbState |= UDF_FCB_DELETED;
-            }
         }
 
         ASSERT(UDFDirIndex(FileInfo->ParentFile->Dloc->DirIndex, FileInfo->Index)->FileInfo == FileInfo);
@@ -2353,26 +2372,61 @@ try_exit:    NOTHING;
 
         //
         // Remove stale target LCB from queues (deferred here from
-        // success path). NeedRemovePrefix is only set after rename
-        // succeeded, so StaleFcb is already marked UDF_FCB_DELETED.
-        // Guard against concurrent teardown that may have already
-        // removed this LCB by checking ParentFcbLinks.
+        // success path or after the target was unlinked. The explicit LCB
+        // and FCB references keep both objects alive through this cleanup.
+        // Search the locked parent's live LCB queue before removing the link.
         //
         if (NeedRemovePrefix) {
-            if (StaleLcb->ParentFcbLinks.Flink != &StaleLcb->ParentFcbLinks) {
-                UDFRemovePrefix(IrpContext, StaleLcb);
+            if (TargetDirInfo->Fcb) {
+                PLIST_ENTRY Link;
+
+                for (Link = TargetDirInfo->Fcb->ChildLcbQueue.Flink;
+                     Link != &TargetDirInfo->Fcb->ChildLcbQueue;
+                     Link = Link->Flink) {
+                    PLCB LinkedLcb = CONTAINING_RECORD(Link, LCB, ParentFcbLinks);
+                    if (LinkedLcb == StaleLcb) {
+                        if (StaleLcbReferenceAdded) {
+                            UDFLockVcb(IrpContext, Vcb);
+                            StaleLcb->Reference--;
+                            StaleLcbReferenceAdded = FALSE;
+                            UDFUnlockVcb(IrpContext, Vcb);
+                        }
+                        UDFRemovePrefix(IrpContext, LinkedLcb);
+                        StaleLcb = NULL;
+                        break;
+                    }
+                }
             }
-            if (StaleFcb) {
+            if (StaleFileIdValid) {
                 UDFLockFcbTable(IrpContext, Vcb);
                 UDFLockVcb(IrpContext, Vcb);
                 {
                     struct { FILE_ID FileId; PFCB Fcb; } _Key;
-                    _Key.FileId = StaleFcb->FileId;
-                    RtlDeleteElementGenericTable(&Vcb->FcbTable, &_Key);
+                    _Key.FileId = StaleFileId;
+                    if (UDFLookupFcbTable(IrpContext, Vcb, StaleFileId) == StaleFcb) {
+                        RtlDeleteElementGenericTable(&Vcb->FcbTable, &_Key);
+                        ClearFlag(StaleFcb->FcbState, FCB_STATE_IN_FCB_TABLE);
+                    }
+                    if (StaleFcbReferenceAdded) {
+                        StaleFcb->FcbReference--;
+                        StaleFcbReferenceAdded = FALSE;
+                    }
                 }
                 UDFUnlockVcb(IrpContext, Vcb);
                 UDFUnlockFcbTable(IrpContext, Vcb);
             }
+        }
+        if (StaleLcbReferenceAdded) {
+            UDFLockVcb(IrpContext, Vcb);
+            StaleLcb->Reference--;
+            StaleLcbReferenceAdded = FALSE;
+            UDFUnlockVcb(IrpContext, Vcb);
+        }
+        if (StaleFcbReferenceAdded) {
+            UDFLockVcb(IrpContext, Vcb);
+            StaleFcb->FcbReference--;
+            StaleFcbReferenceAdded = FALSE;
+            UDFUnlockVcb(IrpContext, Vcb);
         }
         if (StaleFcbAcquired) {
             UDFReleaseFcb(IrpContext, StaleFcb);
