@@ -1064,4 +1064,3 @@ UDFQueueClose(
 
     return;
 } // end UDFQueueDelayedClose()
-
