@@ -3525,10 +3525,11 @@ RenameRetry:
                 status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
                 *TargetDeleted = NT_SUCCESS(status);
 
-                // Mark FCB as deleted to prevent it from going into delayed close queue
-                if (FileInfo2->Fcb) {
- 
-                    FileInfo2->Fcb->FcbState |= UDF_FCB_DELETED;
+                if (*TargetDeleted) {
+                    // Mark FCB as deleted to prevent it from going into delayed close queue
+                    if (FileInfo2->Fcb) {
+                        FileInfo2->Fcb->FcbState |= UDF_FCB_DELETED;
+                    }
                 }
                 UDFCloseFile__(IrpContext, Vcb, FileInfo2);
 
