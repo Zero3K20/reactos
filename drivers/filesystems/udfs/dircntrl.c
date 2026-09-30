@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*************************************************************************
 *
-* File: DirCntrl.cpp
+* File: DirCntrl.c
 *
 * Module: UDF File System Driver (Kernel mode execution only)
 *

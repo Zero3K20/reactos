@@ -302,7 +302,7 @@ UDFMountVolume(
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
 
-    auto RealDevice = Vpb->RealDevice;
+    PDEVICE_OBJECT RealDevice = Vpb->RealDevice;
     
     SetDoVerifyOnFail = UDFRealDevNeedsVerify(RealDevice);
 
@@ -645,15 +645,7 @@ UDFCloseResidual(
         UDFCloseFile__(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo);
         if (Vcb->RootIndexFcb->FcbCleanup)
             Vcb->RootIndexFcb->FcbCleanup--;
-        {
-            BOOLEAN RemovedFcb = FALSE;
-            UDFAcquireFcbExclusive(IrpContext, Vcb->RootIndexFcb, FALSE);
-            // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
-            UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, FALSE, &RemovedFcb);
-            if (!RemovedFcb) {
-                UDFReleaseFcb(IrpContext, Vcb->RootIndexFcb);
-            }
-        }
+        UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
             InterlockedDecrement((PLONG)&Vcb->VcbReference);
@@ -1006,7 +998,7 @@ Return Value:
     //  remaining after the purge then we can allow the volume to be locked.
     //
 
-    UDFFlushVolume(IrpContext, Vcb);
+    UDFFlushVolume(IrpContext, Vcb, 0);
     //CdPurgeVolume( IrpContext, Vcb, FALSE );
 
     //
@@ -1190,7 +1182,7 @@ UDFDismountVolume(
 
     } else {
 
-        UDFFlushVolume(IrpContext, Vcb);
+        UDFFlushVolume(IrpContext, Vcb, 0);
 
         // Invalidate the volume right now.
         //
@@ -1821,7 +1813,7 @@ UDFInvalidateVolumes(
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-            UDFFlushVolume(IrpContext, Vcb);
+            UDFFlushVolume(IrpContext, Vcb, 0);
 
             UDFToggleMediaEjectDisable(Vcb, FALSE);
 

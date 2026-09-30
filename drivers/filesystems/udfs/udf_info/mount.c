@@ -940,7 +940,7 @@ UDFUpdateNonAllocated(
     }
     UDFPackMapping(Vcb, DataLoc);
     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
-    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
+    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo, 0);
 
     // ensure that BAD space is marked as USED
     UDFMarkSpaceAsXXX(Vcb, 0, &(DataLoc->Mapping[0]), AS_USED); // mark as used
@@ -2449,6 +2449,7 @@ UDFReadVDS(
                 }
                 break;
             case TID_VOL_DESC_PTR: // ISO 13346 3/10.3
+            {
                 struct VolDescPtr* pVDP;
                 if (vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
                 {
@@ -2466,6 +2467,7 @@ UDFReadVDS(
                                          vds, Buf);
                 }
                 break;
+            }
             case TID_IMP_USE_VOL_DESC: // ISO 13346 3/10.4
                 if (vdsn >= vds[VDS_POS_IMP_USE_VOL_DESC].volDescSeqNum)
                 {
@@ -2850,7 +2852,7 @@ UDFFindLastFileSet(
     uint16 Ident;
     uint32 relPrevExt, prevExt;
 
-    relPrevExt, prevExt = NULL;
+    relPrevExt = prevExt = 0;
     FileSetDesc->nextExt.extLength = 1;  // ;)
     // walk through FileSet chain
     // we've just pre-init'd extent length to read 1st FileSet

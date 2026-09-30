@@ -2,49 +2,48 @@
 include_directories(Include)
 
 list(APPEND SOURCE
-    udf_info/alloc.cpp
-    udf_info/dirtree.cpp
-    udf_info/extent.cpp
-    udf_info/mount.cpp
-    udf_info/physical.cpp
-    udf_info/remap.cpp
-    udf_info/udf_info.cpp
-    cleanup.cpp
-    close.cpp
-    create.cpp
-    devcntrl.cpp
+    udf_info/alloc.c
+    udf_info/dirtree.c
+    udf_info/extent.c
+    udf_info/mount.c
+    udf_info/physical.c
+    udf_info/remap.c
+    udf_info/udf_info.c
+    cleanup.c
+    close.c
+    create.c
+    devcntrl.c
     deviosup.cpp
-    dircntrl.cpp
-    fastio.cpp
-    fileinfo.cpp
-    flush.cpp
-    fscntrl.cpp
-    lockctrl.cpp
-    misc.cpp
-    namesup.cpp
-    prefxsup.cpp
-    pnp.cpp
-    read.cpp
-    secursup.cpp
-    shutdown.cpp
-    sys_spec.cpp
-    udf_dbg.cpp
-    udfinit.cpp
-    unload.cpp
-    verfysup.cpp
-    volinfo.cpp
-    write.cpp
-    strucsup.cpp
-    filobsup.cpp
-    udfdata.cpp
+    dircntrl.c
+    fastio.c
+    fileinfo.c
+    flush.c
+    fscntrl.c
+    lockctrl.c
+    misc.c
+    namesup.c
+    prefxsup.c
+    pnp.c
+    read.c
+    secursup.c
+    shutdown.c
+    sys_spec.c
+    udf_dbg.c
+    udfinit.c
+    unload.c
+    verfysup.c
+    volinfo.c
+    write.c
+    strucsup.c
+    filobsup.c
+    udfdata.c
     udffs.h)
 
 add_library(udfs MODULE ${SOURCE} udffs.rc)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)
-    target_compile_options(udfs PRIVATE -Wno-invalid-offsetof)
-    target_compile_options(udfs PRIVATE -Wno-error -fpermissive)
+    target_compile_options(udfs PRIVATE -Wno-error)
 endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")

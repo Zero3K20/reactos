@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*
 
- File: PrefxSup.cpp
+ File: PrefxSup.c
 
  Module: UDF File System Driver (Kernel mode execution only)
 
