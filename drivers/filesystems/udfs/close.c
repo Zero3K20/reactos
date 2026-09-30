@@ -884,7 +884,7 @@ Return Value:
                                        (Fcb->Vcb->VcbCondition != VcbMounted) &&
                                        (Fcb->Vcb->VcbCondition != VcbMountInProgress) &&
                                        (Fcb->Vcb->VcbCleanup == 0);
-                               
+
                 if (!PotentialVcbTeardown)  {
 
                     UDFReleaseUdfData(IrpContext);
@@ -894,7 +894,7 @@ Return Value:
             CurrentVcb = Fcb->Vcb;
 
             _Analysis_assume_(CurrentVcb != NULL);
-           
+
             UDFAcquireVcbShared(IrpContext, CurrentVcb, FALSE);
 
             VcbHoldCount = 0;
