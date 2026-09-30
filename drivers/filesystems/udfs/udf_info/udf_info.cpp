@@ -3424,7 +3424,8 @@ UDFRenameMoveFile__(
     IN PUNICODE_STRING fn,       // destination
     IN OUT PUDF_FILE_INFO DirInfo1,
     IN OUT PUDF_FILE_INFO DirInfo2,
-    IN OUT PUDF_FILE_INFO FileInfo  // source (opened)
+    IN OUT PUDF_FILE_INFO FileInfo, // source (opened)
+    OUT PBOOLEAN TargetDeleted
     )
 {
     PUDF_FILE_INFO FileInfo2;
@@ -3435,6 +3436,8 @@ UDFRenameMoveFile__(
     BOOLEAN Recovery = FALSE;
     BOOLEAN SameFE = FALSE;
     uint32 NTAttr = 0;
+
+    *TargetDeleted = FALSE;
 
     // validate FileInfo
     ValidateFileInfo(DirInfo1);
@@ -3520,11 +3523,13 @@ RenameRetry:
                     goto cleanup_and_abort_rename;
                 }
                 status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
+                *TargetDeleted = NT_SUCCESS(status);
 
-                // Mark FCB as deleted to prevent it from going into delayed close queue
-                if (FileInfo2->Fcb) {
- 
-                    FileInfo2->Fcb->FcbState |= UDF_FCB_DELETED;
+                if (*TargetDeleted) {
+                    // Mark FCB as deleted to prevent it from going into delayed close queue
+                    if (FileInfo2->Fcb) {
+                        FileInfo2->Fcb->FcbState |= UDF_FCB_DELETED;
+                    }
                 }
                 UDFCloseFile__(IrpContext, Vcb, FileInfo2);
 

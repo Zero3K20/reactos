@@ -943,7 +943,8 @@ UDFRenameMoveFile__(
     //    IN uint32 ExtAttrSz,
     IN OUT PUDF_FILE_INFO DirInfo1,
     IN OUT PUDF_FILE_INFO DirInfo2,
-    IN OUT PUDF_FILE_INFO FileInfo // source (opened)
+    IN OUT PUDF_FILE_INFO FileInfo, // source (opened)
+    OUT PBOOLEAN TargetDeleted
     );
 
 // change file size (on disc)
