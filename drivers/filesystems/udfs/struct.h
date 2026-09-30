@@ -122,22 +122,6 @@ using IO_CONTEXT = UDF_IO_CONTEXT;
 
 struct LCB;
 
-/* C typedef aliases – allow plain name usage without the 'struct' keyword */
-typedef struct IRP_CONTEXT_LITE IRP_CONTEXT_LITE;
-typedef struct IO_CONTEXT IO_CONTEXT;
-typedef struct IRP_CONTEXT IRP_CONTEXT;
-typedef struct LCB LCB;
-typedef struct UDFIdentifier UDFIdentifier;
-typedef struct UDFObjectName UDFObjectName;
-typedef struct CCB CCB;
-typedef struct FCB_NONPAGED FCB_NONPAGED;
-typedef struct FCB_DATA FCB_DATA;
-typedef struct FCB_INDEX FCB_INDEX;
-typedef struct FCB FCB;
-typedef struct VCB VCB;
-typedef struct VOLUME_DEVICE_OBJECT VOLUME_DEVICE_OBJECT;
-typedef struct THREAD_CONTEXT THREAD_CONTEXT;
-
 /**************************************************************************
     every structure has a node type, and a node size associated with it.
     The node type serves as a signature field. The size is used for
@@ -148,7 +132,8 @@ struct UDFIdentifier {
     NODE_BYTE_SIZE NodeByteSize;           // computed as sizeof(structure)
 };
 
-C_ASSERT(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags));
+static_assert(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags),
+    "UDFIdentifier size mismatch with NodeTypeCode and NodeByteSize in FSRTL_ADVANCED_FCB_HEADER");
 
 /**************************************************************************
     Every open on-disk object must have a name associated with it
@@ -167,7 +152,7 @@ struct UDFObjectName {
     // an absolute pathname of the object is stored below
     UNICODE_STRING                      ObjectName;
 };
-typedef UDFObjectName* PtrUDFObjectName;
+using PtrUDFObjectName = UDFObjectName*;
 
 /**************************************************************************
     Each file open instance is represented by a context control block.
@@ -206,7 +191,7 @@ struct CCB {
     UNICODE_STRING                      SearchExpression;
     HASH_ENTRY                          hashes;
 };
-typedef CCB* PCCB;
+using PCCB = CCB*;
 
 #define CCB_FLAG_IGNORE_CASE                    (0x00000004)
 // the CCB has had an IRP_MJ_CLEANUP issued on it.
@@ -270,7 +255,7 @@ struct FCB_NONPAGED {
     FAST_MUTEX FcbFastMutex;
 
 };
-typedef FCB_NONPAGED* PFCB_NONPAGED;
+using PFCB_NONPAGED = FCB_NONPAGED*;
 
 /**************************************************************************
     each open file/directory/volume is represented by a file control block.
@@ -311,11 +296,11 @@ typedef FCB_NONPAGED* PFCB_NONPAGED;
 /***************************************************/
 
 struct FCB_DATA {
-    UCHAR Placeholder;
+
 };
 
 struct FCB_INDEX {
-    UCHAR Placeholder;
+
 };
 
 struct FCB {
@@ -417,7 +402,7 @@ struct FCB {
         FCB_INDEX FcbIndex;
     };
 };
-typedef FCB* PFCB;
+using PFCB = FCB*;
 
 #define SIZEOF_FCB_DATA     \
     (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_DATA))
@@ -460,7 +445,7 @@ typedef FCB* PFCB;
 
 **************************************************************************/
 
-typedef enum UDFFSD_MEDIA_TYPE {
+enum UDFFSD_MEDIA_TYPE {
     MediaUnknown = 0,
     MediaHdd,
     MediaCdr,
@@ -470,7 +455,7 @@ typedef enum UDFFSD_MEDIA_TYPE {
     MediaFloppy,
     MediaDvdr,
     MediaDvdrw
-} UDFFSD_MEDIA_TYPE;
+};
 
 //***************************************************************************
 //                      LCB (Link Control Block)
@@ -570,14 +555,14 @@ using PLCB = LCB*;
 //                      VCB (Volume Control Block)
 //***************************************************************************
 
-typedef enum VCB_CONDITION {
+enum VCB_CONDITION {
 
     VcbNotMounted = 0,
     VcbMountInProgress,
     VcbMounted,
     VcbInvalid,
     VcbDismountInProgress
-} VCB_CONDITION;
+};
 
 struct VCB {
 
@@ -843,7 +828,7 @@ struct VCB {
     PVPB SwapVpb;
 };
 
-typedef VCB* PVCB;
+using PVCB = VCB*;
 
 // One for root
 #define UDFS_BASE_RESIDUAL_REFERENCE                (4)//(6)
@@ -917,7 +902,7 @@ struct THREAD_CONTEXT {
     //  will store the IrpContext for the request in this stack location.
     IRP_CONTEXT* TopLevelIrpContext;
 };
-typedef THREAD_CONTEXT* PTHREAD_CONTEXT;
+using PTHREAD_CONTEXT = THREAD_CONTEXT*;
 
 /**************************************************************************
     The IRP context encapsulates the current request. This structure is
@@ -961,7 +946,7 @@ struct IRP_CONTEXT {
 
     VCB*      Vcb;
 };
-typedef IRP_CONTEXT* PIRP_CONTEXT;
+using PIRP_CONTEXT = IRP_CONTEXT*;
 
 #define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
 #define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
@@ -1025,7 +1010,7 @@ struct IRP_CONTEXT_LITE {
     //  Real device object.  This represents the physical device closest to the media.
     PDEVICE_OBJECT                  RealDevice;
 };
-typedef IRP_CONTEXT_LITE* PIRP_CONTEXT_LITE;
+using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
 
 /**************************************************************************
     we will store all of our global variables in one structure.

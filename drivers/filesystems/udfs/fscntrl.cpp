@@ -302,7 +302,7 @@ UDFMountVolume(
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
 
-    PDEVICE_OBJECT RealDevice = Vpb->RealDevice;
+    auto RealDevice = Vpb->RealDevice;
     
     SetDoVerifyOnFail = UDFRealDevNeedsVerify(RealDevice);
 
@@ -645,7 +645,15 @@ UDFCloseResidual(
         UDFCloseFile__(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo);
         if (Vcb->RootIndexFcb->FcbCleanup)
             Vcb->RootIndexFcb->FcbCleanup--;
-        UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
+        {
+            BOOLEAN RemovedFcb = FALSE;
+            UDFAcquireFcbExclusive(IrpContext, Vcb->RootIndexFcb, FALSE);
+            // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
+            UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, FALSE, &RemovedFcb);
+            if (!RemovedFcb) {
+                UDFReleaseFcb(IrpContext, Vcb->RootIndexFcb);
+            }
+        }
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
             InterlockedDecrement((PLONG)&Vcb->VcbReference);
@@ -998,7 +1006,7 @@ Return Value:
     //  remaining after the purge then we can allow the volume to be locked.
     //
 
-    UDFFlushVolume(IrpContext, Vcb, 0);
+    UDFFlushVolume(IrpContext, Vcb);
     //CdPurgeVolume( IrpContext, Vcb, FALSE );
 
     //
@@ -1182,7 +1190,7 @@ UDFDismountVolume(
 
     } else {
 
-        UDFFlushVolume(IrpContext, Vcb, 0);
+        UDFFlushVolume(IrpContext, Vcb);
 
         // Invalidate the volume right now.
         //
@@ -1340,7 +1348,7 @@ UDFGetVolumeBitmap(
 
         // Fill in the fixed part of the output buffer
 
-        _SEH2_TRY {
+        __try {
 
             // StartingLcn in output = aligned starting block
 
@@ -1350,10 +1358,10 @@ UDFGetVolumeBitmap(
 
             OutputBuffer->BitmapSize.QuadPart = DesiredClusters;
 
-        } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
 
             try_return(Status = STATUS_INVALID_USER_BUFFER);
-        } _SEH2_END
+        }
 
         OutputBufferLength -= FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer);
 
@@ -1813,7 +1821,7 @@ UDFInvalidateVolumes(
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-            UDFFlushVolume(IrpContext, Vcb, 0);
+            UDFFlushVolume(IrpContext, Vcb);
 
             UDFToggleMediaEjectDisable(Vcb, FALSE);
 

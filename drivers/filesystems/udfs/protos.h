@@ -496,7 +496,7 @@ ULONG UDFFlushAFile(
     IN PFCB Fcb,
     IN PCCB Ccb,
     OUT PIO_STATUS_BLOCK PtrIoStatus,
-    IN ULONG FlushFlags
+    IN ULONG FlushFlags = 0
     );
 
 ULONG
@@ -505,14 +505,14 @@ UDFFlushADirectory(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FI,
     OUT PIO_STATUS_BLOCK PtrIoStatus,
-    ULONG FlushFlags
+    ULONG FlushFlags = 0
     );
 
 NTSTATUS
 UDFFlushVolume(
     PIRP_CONTEXT IrpContext,
     PVCB Vcb,
-    ULONG FlushFlags
+    ULONG FlushFlags = 0
     );
 
 extern NTSTATUS NTAPI UDFFlushCompletion(
@@ -522,7 +522,7 @@ PVOID                       Context);
 
 extern BOOLEAN UDFFlushIsBreaking(
 IN PVCB         Vcb,
-IN ULONG        FlushFlags);
+IN ULONG        FlushFlags = 0);
 
 extern VOID UDFFlushTryBreak(
 IN PVCB         Vcb);
@@ -950,7 +950,7 @@ UDFReadRegKeys(
 extern ULONG UDFGetRegParameter(
     IN PVCB Vcb,
     IN PCWSTR Name,
-    IN ULONG DefValue);
+    IN ULONG DefValue = 0);
 
 VOID
 UDFDeleteVCB(
@@ -1354,13 +1354,13 @@ UDFMarkDevForVerifyIfVcbMounted(
     UdfData.UdfDataLockThread = NULL;                                                   \
     ExReleaseFastMutexUnsafe(&UdfData.UdfDataMutex)
 
-typedef enum TYPE_OF_ACQUIRE {
+enum TYPE_OF_ACQUIRE {
     
     AcquireExclusive,
     AcquireShared,
     AcquireSharedStarveExclusive
 
-} TYPE_OF_ACQUIRE;
+};
 
 _Requires_lock_held_(_Global_critical_region_)
 _When_(Type == AcquireExclusive && return != FALSE, _Acquires_exclusive_lock_(*Resource))

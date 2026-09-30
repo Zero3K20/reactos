@@ -41,7 +41,7 @@
   ULONG
   _cdecl
   DbgPrint(
-      PCSTR Format,
+      PCH Format,
       ...
       );
 

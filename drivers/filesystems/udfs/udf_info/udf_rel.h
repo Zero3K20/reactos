@@ -240,7 +240,7 @@ typedef struct _UDF_DATALOC_INFO {
     NT-specific field. As soon as NT supports HardLink concept it
     has own structure describing the file's actual data.
 */
-	struct FCB* CommonFcb; // pointer to corresponding FCB
+	FCB* CommonFcb; // pointer to corresponding FCB
 /**
     Describes on-disk location of  user  data.  If  the  file  is
     recorded using IN_ICB method this  structure  points  to  the
@@ -436,6 +436,18 @@ typedef struct _UDF_DIR_SCAN_CONTEXT {
     uint32  d;
     uint_di i;
 } UDF_DIR_SCAN_CONTEXT, *PUDF_DIR_SCAN_CONTEXT;
+
+/**
+    Directory enumeration context for find/open operations.
+    Separates directory search from file open operations.
+*/
+typedef struct _DIR_ENUM_CONTEXT {
+    PUDF_FILE_INFO ParentInfo;        // Parent directory FileInfo
+    PDIR_INDEX_HDR DirIndex;          // Directory index header
+    PDIR_INDEX_ITEM DirNdx;           // Found directory entry (or NULL)
+    uint_di Index;                    // Index of found entry
+    BOOLEAN ShortNameMatch;           // TRUE if matched by 8.3 short name
+} DIR_ENUM_CONTEXT, *PDIR_ENUM_CONTEXT;
 
 typedef EXT_RELOCATION_ENTRY  EXT_RELOC_MAP;
 typedef PEXT_RELOCATION_ENTRY PEXT_RELOC_MAP;
