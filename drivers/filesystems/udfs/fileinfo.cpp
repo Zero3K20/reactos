@@ -2356,12 +2356,22 @@ try_exit:    NOTHING;
         // Remove stale target LCB from queues (deferred here from
         // success path). NeedRemovePrefix is only set after rename
         // succeeded, so StaleFcb is already marked UDF_FCB_DELETED.
-        // Guard against concurrent teardown that may have already
-        // removed this LCB by checking ParentFcbLinks.
+        // Search the locked parent's live LCB queue before using StaleLcb:
+        // teardown may already have removed and freed it.
         //
         if (NeedRemovePrefix) {
-            if (StaleLcb->ParentFcbLinks.Flink != &StaleLcb->ParentFcbLinks) {
-                UDFRemovePrefix(IrpContext, StaleLcb);
+            if (TargetDirInfo->Fcb) {
+                PLIST_ENTRY Link;
+
+                for (Link = TargetDirInfo->Fcb->ChildLcbQueue.Flink;
+                     Link != &TargetDirInfo->Fcb->ChildLcbQueue;
+                     Link = Link->Flink) {
+                    PLCB LinkedLcb = CONTAINING_RECORD(Link, LCB, ParentFcbLinks);
+                    if (LinkedLcb == StaleLcb) {
+                        UDFRemovePrefix(IrpContext, LinkedLcb);
+                        break;
+                    }
+                }
             }
             if (StaleFcb) {
                 UDFLockFcbTable(IrpContext, Vcb);
