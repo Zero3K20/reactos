@@ -25,7 +25,7 @@ jobs:
         echo git-sha=$(git ls-remote https://github.com/zefklop/RosBE.git | grep unix_amd64 | awk '{print $1}') >> $GITHUB_OUTPUT
         wget https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
         # Fallback for GNU file server problems.
-        sed -i '/gcc-8.4.0\/gcc-8.4.0.tar.xz/c\wget https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz || wget -L https://web.archive.org/web/2025if_/https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz' ./build_rosbe_ci.sh
+        sed -i '/gcc-8.4.0\/gcc-8.4.0.tar.xz/c\(wget -O gcc-8.4.0.tar.xz https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz && xz -t gcc-8.4.0.tar.xz) || wget -O gcc-8.4.0.tar.xz https://web.archive.org/web/2025if_/https://ftpmirror.gnu.org/gcc/gcc-8.4.0/gcc-8.4.0.tar.xz' ./build_rosbe_ci.sh
         # Fallback for SourceForge file server problems.
         sed -i '/sourceforge.net.*mingw-w64/c\(wget -O mingw-w64-v6.0.0.tar.bz2 https://downloads.sourceforge.net/project/mingw-w64/mingw-w64/mingw-w64-release/mingw-w64-v6.0.0.tar.bz2 && bzip2 -t mingw-w64-v6.0.0.tar.bz2) || wget -O mingw-w64-v6.0.0.tar.bz2 https://web.archive.org/web/2025if_/https://downloads.sourceforge.net/project/mingw-w64/mingw-w64/mingw-w64-release/mingw-w64-v6.0.0.tar.bz2' ./build_rosbe_ci.sh
         sed -i '2i set -e' ./build_rosbe_ci.sh
