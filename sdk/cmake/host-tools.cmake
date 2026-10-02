@@ -118,17 +118,16 @@ function(setup_host_tools)
 
     if(CMAKE_GENERATOR MATCHES "Ninja")
         set_property(GLOBAL PROPERTY JOB_POOLS host_tools_pool=1)
+        set(HOST_TOOLS_JOB_POOL JOB_POOL host_tools_pool)
     endif()
 
     foreach(_tool ${HOST_TOOLS})
         add_custom_target(native-${_tool}-build
             COMMAND ${CMAKE_COMMAND} --build ${REACTOS_BINARY_DIR}/host-tools/bin --target ${_tool} --config $<CONFIG>
             BYPRODUCTS ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_tool}${HOST_EXE_SUFFIX}
+            ${HOST_TOOLS_JOB_POOL}
             VERBATIM)
         add_dependencies(native-${_tool}-build host-tools)
-        if(CMAKE_GENERATOR MATCHES "Ninja")
-            set_property(TARGET native-${_tool}-build PROPERTY JOB_POOL host_tools_pool)
-        endif()
 
         add_executable(native-${_tool} IMPORTED)
         set_target_properties(native-${_tool} PROPERTIES IMPORTED_LOCATION ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_tool}${HOST_EXE_SUFFIX})
@@ -139,11 +138,9 @@ function(setup_host_tools)
         add_custom_target(native-${_module}-build
             COMMAND ${CMAKE_COMMAND} --build ${REACTOS_BINARY_DIR}/host-tools/bin --target ${_module} --config $<CONFIG>
             BYPRODUCTS ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_module}${HOST_MODULE_SUFFIX}
+            ${HOST_TOOLS_JOB_POOL}
             VERBATIM)
         add_dependencies(native-${_module}-build host-tools)
-        if(CMAKE_GENERATOR MATCHES "Ninja")
-            set_property(TARGET native-${_module}-build PROPERTY JOB_POOL host_tools_pool)
-        endif()
 
         add_library(native-${_module} MODULE IMPORTED)
         set_target_properties(native-${_module} PROPERTIES IMPORTED_LOCATION ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_module}${HOST_MODULE_SUFFIX})
