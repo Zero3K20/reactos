@@ -20,9 +20,7 @@ function(setup_host_tools)
             list(APPEND HOST_MODULES g++_plugin_seh)
         endif()
     endif()
-    list(TRANSFORM HOST_TOOLS PREPEND "${REACTOS_BINARY_DIR}/host-tools/bin/" OUTPUT_VARIABLE HOST_TOOLS_OUTPUT)
     if (CMAKE_HOST_WIN32)
-        list(TRANSFORM HOST_TOOLS_OUTPUT APPEND ".exe")
         if(MSVC_IDE)
             set(HOST_EXTRA_DIR "$(ConfigurationName)/")
         endif()
@@ -112,22 +110,40 @@ function(setup_host_tools)
             -DTARGET_BUILD_TYPE=${CMAKE_BUILD_TYPE}
             -DCMAKE_BUILD_TYPE=${HOST_BUILD_TYPE}
             ${CMAKE_HOST_TOOLS_EXTRA_ARGS}
-        BUILD_ALWAYS TRUE
+        BUILD_COMMAND ${CMAKE_COMMAND} -E true
         INSTALL_COMMAND ${CMAKE_COMMAND} -E true
-        BUILD_BYPRODUCTS ${HOST_TOOLS_OUTPUT}
     )
 
     ExternalProject_Get_Property(host-tools INSTALL_DIR)
 
+    if(CMAKE_GENERATOR MATCHES "Ninja")
+        set_property(GLOBAL PROPERTY JOB_POOLS host_tools_pool=1)
+        set(HOST_TOOLS_JOB_POOL JOB_POOL host_tools_pool)
+    endif()
+
     foreach(_tool ${HOST_TOOLS})
+        add_custom_target(native-${_tool}-build
+            COMMAND ${CMAKE_COMMAND} --build ${REACTOS_BINARY_DIR}/host-tools/bin --target ${_tool} --config $<CONFIG>
+            BYPRODUCTS ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_tool}${HOST_EXE_SUFFIX}
+            ${HOST_TOOLS_JOB_POOL}
+            VERBATIM)
+        add_dependencies(native-${_tool}-build host-tools)
+
         add_executable(native-${_tool} IMPORTED)
         set_target_properties(native-${_tool} PROPERTIES IMPORTED_LOCATION ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_tool}${HOST_EXE_SUFFIX})
-        add_dependencies(native-${_tool} host-tools ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_tool}${HOST_EXE_SUFFIX})
+        add_dependencies(native-${_tool} native-${_tool}-build)
     endforeach()
 
     foreach(_module ${HOST_MODULES})
+        add_custom_target(native-${_module}-build
+            COMMAND ${CMAKE_COMMAND} --build ${REACTOS_BINARY_DIR}/host-tools/bin --target ${_module} --config $<CONFIG>
+            BYPRODUCTS ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_module}${HOST_MODULE_SUFFIX}
+            ${HOST_TOOLS_JOB_POOL}
+            VERBATIM)
+        add_dependencies(native-${_module}-build host-tools)
+
         add_library(native-${_module} MODULE IMPORTED)
         set_target_properties(native-${_module} PROPERTIES IMPORTED_LOCATION ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_module}${HOST_MODULE_SUFFIX})
-        add_dependencies(native-${_module} host-tools ${INSTALL_DIR}/bin/${HOST_EXTRA_DIR}${_module}${HOST_MODULE_SUFFIX})
+        add_dependencies(native-${_module} native-${_module}-build)
     endforeach()
 endfunction()

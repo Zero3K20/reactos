@@ -2,7 +2,7 @@
 add_library(genincdata MODULE genincdata.c)
 
 set_entrypoint(genincdata 0)
-add_dependencies(genincdata bugcodes psdk xdk)
+add_dependencies(genincdata bugcodes xdk)
 
 if(MSVC)
     set(OPT_MS "-ms")
