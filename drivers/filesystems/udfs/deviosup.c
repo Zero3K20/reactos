@@ -106,6 +106,7 @@ UDFConvertToRecorded(
 IO_COMPLETION_ROUTINE UDFSingleSyncCompletionRoutine;
 IO_COMPLETION_ROUTINE UDFSingleAsyncCompletionRoutine;
 IO_COMPLETION_ROUTINE UDFMultiSyncCompletionRoutine;
+IO_COMPLETION_ROUTINE UDFMultiAsyncCompletionRoutine;
 
 // -----------------------------------------------------------------------
 //  Public entry points
@@ -339,6 +340,21 @@ UDFNonCachedIo(
                     Status = STATUS_PENDING;
                 }
 
+                _SEH2_LEAVE;
+            }
+
+            //
+            //  A complete batch of aligned runs needs no post-I/O buffer
+            //  processing, so it can be dispatched without waiting.
+            //
+
+            if (!Wait &&
+                !Unaligned &&
+                !SparseRuns &&
+                ThisByteCount == RemainingByteCount) {
+
+                UDFMultipleAsync(IrpContext, RunCount, IoRuns);
+                Status = STATUS_PENDING;
                 _SEH2_LEAVE;
             }
 
@@ -1009,7 +1025,8 @@ UDFSingleAsync(
 * Description:
 *   Sends multiple I/O runs using associated IRPs with partial MDLs.
 *   Each associated IRP is dispatched to the lower driver.
-*   The completion routine tracks them and signals when all are done.
+*   The completion routine tracks them and either signals the waiter or
+*   completes the master IRP when all are done.
 *
 *************************************************************************/
 
@@ -1093,7 +1110,9 @@ UDFMultipleAsync(
         //
 
         IoSetCompletionRoutine(Irp,
-                               UDFMultiSyncCompletionRoutine,
+                               FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT) ?
+                                   UDFMultiSyncCompletionRoutine :
+                                   UDFMultiAsyncCompletionRoutine,
                                IrpContext->IoContext,
                                TRUE,
                                TRUE,
@@ -1116,6 +1135,7 @@ UDFMultipleAsync(
 
     IrpContext->IoContext->IrpCount = RunCount;
     IrpContext->IoContext->MasterIrp = MasterIrp;
+    IrpContext->IoContext->Status = STATUS_SUCCESS;
 
     //
     //  Prevent the I/O system from completing the master IRP
@@ -1123,6 +1143,11 @@ UDFMultipleAsync(
     //
 
     MasterIrp->AssociatedIrp.IrpCount = 1;
+
+    if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+        ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+        IoMarkIrpPending(MasterIrp);
+    }
 
     //
     //  Phase 2: Dispatch all associated IRPs.
@@ -1285,7 +1310,9 @@ UDFMultiSyncCompletionRoutine(
 
     if (!NT_SUCCESS(Irp->IoStatus.Status)) {
 
-        InterlockedExchange(&IoContext->Status, Irp->IoStatus.Status);
+        InterlockedCompareExchange(&IoContext->Status,
+                                   Irp->IoStatus.Status,
+                                   STATUS_SUCCESS);
         IoContext->MasterIrp->IoStatus.Information = 0;
     }
 
@@ -1305,6 +1332,48 @@ UDFMultiSyncCompletionRoutine(
 
         IoContext->MasterIrp->IoStatus.Status = IoContext->Status;
         KeSetEvent(&IoContext->SyncEvent, 0, FALSE);
+    }
+
+    return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+NTSTATUS
+NTAPI
+UDFMultiAsyncCompletionRoutine(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_reads_opt_(_Inexpressible_("varies")) PVOID Context
+    )
+{
+    PUDF_IO_CONTEXT IoContext = (PUDF_IO_CONTEXT)Context;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (!NT_SUCCESS(Irp->IoStatus.Status)) {
+        InterlockedCompareExchange(&IoContext->Status,
+                                   Irp->IoStatus.Status,
+                                   STATUS_SUCCESS);
+    }
+
+    IoFreeMdl(Irp->MdlAddress);
+    IoFreeIrp(Irp);
+
+    if (InterlockedDecrement(&IoContext->IrpCount) == 0) {
+        PIRP MasterIrp = IoContext->MasterIrp;
+
+        MasterIrp->IoStatus.Status = IoContext->Status;
+        MasterIrp->IoStatus.Information =
+            NT_SUCCESS(IoContext->Status) ?
+                IoContext->RequestedByteCount : 0;
+
+        ExReleaseResourceForThreadLite(IoContext->Resource,
+                                       IoContext->ResourceThreadId);
+
+        if (IoContext->AllocatedContext) {
+            ExFreePool(IoContext);
+        }
+
+        IoCompleteRequest(MasterIrp, IO_DISK_INCREMENT);
     }
 
     return STATUS_MORE_PROCESSING_REQUIRED;
