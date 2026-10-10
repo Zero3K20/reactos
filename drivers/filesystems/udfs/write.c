@@ -598,6 +598,15 @@ UDFCommonWrite(
             // We needn't call CcZeroData here (like in Fat driver)
             // 'cause we've already done it above
             // (see call to UDFZeroDataEx() )
+            if (!Wait &&
+                (SynchronousIo ||
+                 (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) ||
+                 OldVDL < StartingOffset + TruncatedLength ||
+                 (StartingOffset & (Vcb->SectorSize - 1)) ||
+                 (TruncatedLength & (Vcb->SectorSize - 1)))) {
+                try_return(Status = STATUS_PENDING);
+            }
+
             if (!RecursiveWriteThrough &&
                 !IsLazyWriteThread &&
                 (OldVDL < StartingOffset)) {
@@ -615,10 +624,12 @@ UDFCommonWrite(
             }
 
             // Send the request to lower level drivers
+#ifndef UDF_ASYNC_IO
             if (!Wait) {
 
                 try_return(Status = STATUS_PENDING);
             }
+#endif
 
             // Lock the callers buffer
 
@@ -653,20 +664,62 @@ UDFCommonWrite(
             } else {
 
                 //
-                //  Initialize the IoContext for the write (always synchronous).
+                //  Initialize the IoContext for the write.
                 //
 
-                IrpContext->IoContext = &LocalIoContext;
-                ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+                if (IrpContext->IoContext == NULL ||
+                    !FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
 
-                RtlZeroMemory(&LocalIoContext, sizeof(struct UDF_IO_CONTEXT));
+                    if (Wait) {
 
-                KeInitializeEvent(&LocalIoContext.SyncEvent,
-                                  NotificationEvent,
-                                  FALSE);
+                        IrpContext->IoContext = &LocalIoContext;
+                        ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+
+                    } else {
+
+                        IrpContext->IoContext = (PUDF_IO_CONTEXT)
+                            FsRtlAllocatePoolWithTag(NonPagedPool,
+                                                     sizeof(struct UDF_IO_CONTEXT),
+                                                     TAG_IO_CONTEXT);
+                        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+                    }
+                }
+
+                RtlZeroMemory(IrpContext->IoContext, sizeof(struct UDF_IO_CONTEXT));
+
+                IrpContext->IoContext->AllocatedContext =
+                    BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+
+                if (Wait) {
+
+                    KeInitializeEvent(&IrpContext->IoContext->SyncEvent,
+                                      NotificationEvent,
+                                      FALSE);
+
+                } else {
+
+                    IrpContext->IoContext->Resource = &Fcb->FcbNonpaged->FcbResource;
+                    IrpContext->IoContext->Resource2 =
+                        PagingIoResourceAcquired ? &Fcb->FcbNonpaged->FcbPagingIoResource : NULL;
+                    IrpContext->IoContext->ResourceThreadId = ExGetCurrentResourceThread();
+                    IrpContext->IoContext->RequestedByteCount = TruncatedLength;
+                    IrpContext->IoContext->FileObject = FileObject;
+                }
 
                 Status = UDFNonCachedIo(IrpContext, Fcb, StartingOffset, TruncatedLength);
-                IrpContext->IoContext = NULL;
+
+                if (Status == STATUS_PENDING && !Wait) {
+
+                    Irp = NULL;
+                    MainResourceAcquired = FALSE;
+                    PagingIoResourceAcquired = FALSE;
+                    try_return(Status);
+                }
+
+                if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
+                    IrpContext->IoContext = NULL;
+                }
+
                 NumberBytesWritten = (ULONG)Irp->IoStatus.Information;
             }
 
@@ -748,7 +801,11 @@ try_exit:   NOTHING;
 
     if (Status == STATUS_PENDING) {
 
-        Status = UDFFsdPostRequest(IrpContext, Irp);
+        if (Irp == NULL) {
+            UDFCompleteRequest(IrpContext, NULL, STATUS_PENDING);
+        } else {
+            Status = UDFFsdPostRequest(IrpContext, Irp);
+        }
 
     } else {
 

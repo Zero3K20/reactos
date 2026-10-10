@@ -151,6 +151,7 @@ UDFNonCachedIo(
     BOOLEAN FlushIoBuffers = FALSE;
     BOOLEAN FirstPass = TRUE;
     BOOLEAN IsWrite = (IrpContext->MajorFunction == IRP_MJ_WRITE);
+    BOOLEAN Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
     //  Validate preconditions.
 
@@ -260,6 +261,10 @@ UDFNonCachedIo(
 
         if (NeedConversion) {
 
+            if (!Wait) {
+                UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
+            }
+
             ASSERT(!UdfSectorOffset(Vcb, ByteCount));
 
             Status = UDFConvertToRecorded(IrpContext, Fcb,
@@ -273,8 +278,6 @@ UDFNonCachedIo(
 
     //  The caller must have set up the IoContext before calling us.
     //  (Stack-allocated for sync, pool-allocated for async.)
-
-    BOOLEAN Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
     ASSERT(IrpContext->IoContext != NULL);
 
@@ -738,7 +741,9 @@ UDFPrepareBuffers(
             //  Unaligned I/O requires synchronous operation.
             //
 
-            ASSERT(FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT));
+            if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+                UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
+            }
 
             ThisIoRun->TransferBufferOffset = UdfSectorOffset(Vcb, DiskOffset);
 
@@ -1242,6 +1247,17 @@ UDFSingleAsyncCompletionRoutine(
     if (NT_SUCCESS(Irp->IoStatus.Status)) {
 
         Irp->IoStatus.Information = IoContext->RequestedByteCount;
+
+        if (IoContext->FileObject != NULL &&
+            IoGetCurrentIrpStackLocation(Irp)->MajorFunction == IRP_MJ_WRITE) {
+            SetFlag(IoContext->FileObject->Flags, FO_FILE_MODIFIED);
+        }
+    }
+
+    if (Irp->MdlAddress != NULL) {
+        KeFlushIoBuffers(Irp->MdlAddress,
+                         IoGetCurrentIrpStackLocation(Irp)->MajorFunction == IRP_MJ_READ,
+                         FALSE);
     }
 
     //
@@ -1251,8 +1267,13 @@ UDFSingleAsyncCompletionRoutine(
     IoMarkIrpPending(Irp);
 
     //
-    //  Release the FCB resource that was held for the duration of the I/O.
+    //  Release the resources that were held for the duration of the I/O.
     //
+
+    if (IoContext->Resource2 != NULL) {
+        ExReleaseResourceForThreadLite(IoContext->Resource2,
+                                       IoContext->ResourceThreadId);
+    }
 
     ExReleaseResourceForThreadLite(IoContext->Resource,
                                    IoContext->ResourceThreadId);

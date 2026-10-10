@@ -87,8 +87,8 @@ typedef struct UDF_IO_RUN* PIO_RUN;
 /**************************************************************************
     I/O context used to synchronize non-cached I/O completion.
     For synchronous requests the SyncEvent member is used;
-    for asynchronous requests the Resource/ResourceThreadId members
-    allow the completion routine to release the FCB resource.
+    for asynchronous requests the resource and file-object members
+    allow the completion routine to finish the request.
 **************************************************************************/
 
 struct UDF_IO_CONTEXT {
@@ -106,8 +106,10 @@ struct UDF_IO_CONTEXT {
 
         struct {
             PERESOURCE Resource;
+            PERESOURCE Resource2;
             ERESOURCE_THREAD ResourceThreadId;
             ULONG RequestedByteCount;
+            PFILE_OBJECT FileObject;
         };
 
         //  Synchronous non-cached I/O.
