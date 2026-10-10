@@ -4195,7 +4195,6 @@ err_vat_15:
                 }
             }
         }
-        UDFUnpinBitmapPage(Vcb);
         len = root + Vcb->FSBM_BitCount;  // end of partition in PSN (bitmap is LBN-indexed)
         // "pre-format" reserved area
         for(i=Vcb->NWA; i<len;) {
@@ -4222,7 +4221,6 @@ err_vat_15:
                 }
             }
         }
-        UDFUnpinBitmapPage(Vcb);
         DbgFreePool(VatOldData);
     }
     return status;
@@ -5758,7 +5756,6 @@ UDFRecordVAT(
         if (isFree)
             Vat[i] = UDF_VAT_FREE_ENTRY;
     }
-    UDFUnpinBitmapPage(Vcb);
     // Ok, now we shall construct new VAT image...
     // !!! NOTE !!!
     // Both VAT copies - in-memory & on-disc

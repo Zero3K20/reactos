@@ -184,6 +184,10 @@ UDFPinBitmapPage(
     Vcb->BitmapPageBitCount = bitCount;
 }
 
+/*
+    The pinned page stays cached in the Vcb across allocation calls and is only
+    released by UDFPinBitmapPage (on page change) or here (flush / dismount).
+ */
 VOID
 UDFUnpinBitmapPage(
     IN PVCB Vcb
@@ -193,6 +197,7 @@ UDFUnpinBitmapPage(
         CcUnpinData(Vcb->BitmapBcb);
         Vcb->BitmapBcb = NULL;
         Vcb->BitmapPinnedData = NULL;
+        Vcb->BitmapPinnedOffset = (ULONG)-1;
     }
 }
 
@@ -790,7 +795,6 @@ UDFFindMinSuitableExtent(
             break;
     }
     
-    UDFUnpinBitmapPage(Vcb);
     
     if (!best_len && !max_len) {
         UDFPrint(("UDFFindMinSuitableExtent: Couldn't find free space lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
@@ -1116,7 +1120,6 @@ UDFMarkSpaceAsXXXNoProtect_(
         i++;
     }
 
-    UDFUnpinBitmapPage(Vcb);
 } // end UDFMarkSpaceAsXXXNoProtect_()
 
 /*
@@ -1307,7 +1310,6 @@ UDFGetPartFreeSpace(
             s += RtlNumberOfSetBits(&Vcb->BitmapRtl);
             pos = startLbn + bits;
         }
-        UDFUnpinBitmapPage(Vcb);
         UDFReleaseResource(&(Vcb->BitMapResource1));
     } else {
         PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);

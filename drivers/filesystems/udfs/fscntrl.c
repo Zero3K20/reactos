@@ -1466,7 +1466,6 @@ UDFGetVolumeBitmap(
             if (isFree)
                 UDFSetFreeBit(FSBM, i);
         }
-        UDFUnpinBitmapPage(Vcb);
 
         Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;
 
