@@ -433,6 +433,8 @@ typedef struct FCB* PFCB;
 #define     UDF_FCB_NOT_FOUND_ON_MEDIA                  (0x00010000)
 #define     FCB_STATE_INITIALIZED                       (0x00020000)
 #define     FCB_STATE_IN_FCB_TABLE                      (0x00040000)
+// FE changed in memory, flush deferred to UDFTeardownStructures
+#define     UDF_FCB_STATE_DIRTY                         (0x00080000)
 
 #define     UDF_FCB_DELETE_PARENT                       (0x10000000)
 #define     FCB_STATE_TEMPORARY                         (0x80000000)

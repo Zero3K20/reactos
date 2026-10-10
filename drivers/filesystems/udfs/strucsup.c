@@ -488,6 +488,7 @@ UDFTeardownStructures(
                 !(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
                 UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
             }
+            ClearFlag(CurrentFcb->FcbState, UDF_FCB_STATE_DIRTY);
 
             //
             // Now make the final check.

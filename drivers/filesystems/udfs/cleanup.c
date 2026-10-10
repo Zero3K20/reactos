@@ -526,7 +526,13 @@ UDFCommonCleanup(
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo) {
-            UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
+            // Defer the flush to UDFTeardownStructures unless write-through
+            // semantics were explicitly requested.
+            Fcb->FcbState |= UDF_FCB_STATE_DIRTY;
+            if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+                UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
+                Fcb->FcbState &= ~UDF_FCB_STATE_DIRTY;
+            }
         }
 
         if (!(Fcb->FcbState & UDF_FCB_DIRECTORY) &&
