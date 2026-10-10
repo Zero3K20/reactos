@@ -1023,7 +1023,7 @@ UDFFastIoCopyRead(
     IN PDEVICE_OBJECT DeviceObject
 )
 {
-    return FALSE;
+    return FsRtlCopyRead(FileObject, FileOffset, Length, Wait, LockKey, Buffer, IoStatus, DeviceObject);
 }
 
 BOOLEAN
