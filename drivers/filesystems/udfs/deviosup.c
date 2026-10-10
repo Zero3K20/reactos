@@ -1146,7 +1146,6 @@ UDFMultipleAsync(
 
     if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
         ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
-        IoMarkIrpPending(MasterIrp);
     }
 
     //
@@ -1355,12 +1354,10 @@ UDFMultiAsyncCompletionRoutine(
                                    STATUS_SUCCESS);
     }
 
-    IoFreeMdl(Irp->MdlAddress);
-    IoFreeIrp(Irp);
-
     if (InterlockedDecrement(&IoContext->IrpCount) == 0) {
         PIRP MasterIrp = IoContext->MasterIrp;
 
+        IoMarkIrpPending(MasterIrp);
         MasterIrp->IoStatus.Status = IoContext->Status;
         MasterIrp->IoStatus.Information =
             NT_SUCCESS(IoContext->Status) ?
@@ -1373,8 +1370,11 @@ UDFMultiAsyncCompletionRoutine(
             ExFreePool(IoContext);
         }
 
-        IoCompleteRequest(MasterIrp, IO_DISK_INCREMENT);
+        return STATUS_SUCCESS;
     }
+
+    IoFreeMdl(Irp->MdlAddress);
+    IoFreeIrp(Irp);
 
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
