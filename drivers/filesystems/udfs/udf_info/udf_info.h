@@ -1413,16 +1413,50 @@ UDFDirIndex(
 #define UDFClrBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31))) )
 
 #define UDFSetBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFSetBit(arr, (bit)+j); \
-}}
+do { \
+    uint8* udf_bytes_ = (uint8*)(arr); \
+    uint32 udf_bit_ = (uint32)(bit); \
+    uint32 udf_count_ = (uint32)(bc); \
+    while (udf_count_ && (udf_bit_ & 7)) { \
+        UDFSetBit(udf_bytes_, udf_bit_); \
+        udf_bit_++; \
+        udf_count_--; \
+    } \
+    if (udf_count_ >= 8) { \
+        uint32 udf_byte_count_ = udf_count_ >> 3; \
+        RtlFillMemory(udf_bytes_ + (udf_bit_ >> 3), udf_byte_count_, 0xff); \
+        udf_bit_ += udf_byte_count_ << 3; \
+        udf_count_ -= udf_byte_count_ << 3; \
+    } \
+    while (udf_count_) { \
+        UDFSetBit(udf_bytes_, udf_bit_); \
+        udf_bit_++; \
+        udf_count_--; \
+    } \
+} while (0)
 
 #define UDFClrBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFClrBit(arr, (bit)+j); \
-}}
+do { \
+    uint8* udf_bytes_ = (uint8*)(arr); \
+    uint32 udf_bit_ = (uint32)(bit); \
+    uint32 udf_count_ = (uint32)(bc); \
+    while (udf_count_ && (udf_bit_ & 7)) { \
+        UDFClrBit(udf_bytes_, udf_bit_); \
+        udf_bit_++; \
+        udf_count_--; \
+    } \
+    if (udf_count_ >= 8) { \
+        uint32 udf_byte_count_ = udf_count_ >> 3; \
+        RtlZeroMemory(udf_bytes_ + (udf_bit_ >> 3), udf_byte_count_); \
+        udf_bit_ += udf_byte_count_ << 3; \
+        udf_count_ -= udf_byte_count_ << 3; \
+    } \
+    while (udf_count_) { \
+        UDFClrBit(udf_bytes_, udf_bit_); \
+        udf_bit_++; \
+        udf_count_--; \
+    } \
+} while (0)
 
 #define UDFGetUsedBit(arr,bit)      (!UDFGetBit(arr,bit))
 #define UDFGetFreeBit(arr,bit)      UDFGetBit(arr,bit)
