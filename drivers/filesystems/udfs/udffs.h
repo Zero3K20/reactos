@@ -31,7 +31,7 @@
   #define UDF_X_PATH_LEN UDF_PATH_LEN
 #endif //UDF_LIMIT_NAME_LEN
 
-//#define UDF_ASYNC_IO
+#define UDF_ASYNC_IO
 
 #define UDF_ALLOW_FRAG_AD
 

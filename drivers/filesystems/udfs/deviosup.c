@@ -167,6 +167,12 @@ UDFNonCachedIo(
         }
         IrpContext->Vcb = Fcb->Vcb;
 
+#ifndef UDF_ASYNC_IO
+        if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+            UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
+        }
+#endif
+
         UDFSingleAsync(IrpContext, StartingOffset, ByteCount);
         if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))
         {
@@ -318,6 +324,12 @@ UDFNonCachedIo(
             //
 
             if (RunCount == 1 && !Unaligned && !SparseRuns && FirstPass) {
+
+#ifndef UDF_ASYNC_IO
+                if (!Wait) {
+                    UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
+                }
+#endif
 
                 UDFSingleAsync(IrpContext,
                                IoRuns[0].DiskOffset,
