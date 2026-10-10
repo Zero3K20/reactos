@@ -1593,7 +1593,8 @@ UDFWriteFile__(
             t, elen - Dloc->DataLoc.Offset - Dloc->DataLoc.Length,
             elen - Dloc->DataLoc.Offset,
             Dloc->DataLoc.Length));
-        UDFSetFileSize(FileInfo, t);
+        if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB)
+            UDFSetFileSize(FileInfo, t);
         Dloc->DataLoc.Modified = TRUE;
         Dloc->DataLoc.Length = t;
         return UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
@@ -4603,18 +4604,22 @@ UDFSyncInIcbData(
 {
     uint32 FELen = FileInfo->Dloc->FileEntryLen;
     int8* FEBuf = (int8*)(FileInfo->Dloc->FileEntry);
+    int64 FileLength = UDFGetFileSize(FileInfo);
+    SIZE_T DataLength;
 
-    if (FELen + FileInfo->Dloc->DataLoc.Length 
-        > Vcb->SectorSize)
+    if (FELen > Vcb->SectorSize ||
+        FileInfo->Dloc->DataLoc.Length < 0 ||
+        FileInfo->Dloc->DataLoc.Length > (Vcb->SectorSize - FELen) ||
+        FileLength < 0)
         return STATUS_FILE_CORRUPT_ERROR;
 
     RtlZeroMemory(FEBuf + FELen, Vcb->SectorSize - FELen);
-    if (!FileInfo->Dloc->DataLoc.Length)
+    DataLength = (SIZE_T)min(FileInfo->Dloc->DataLoc.Length, FileLength);
+    if (!DataLength)
         return STATUS_SUCCESS;
 
     return UDFReadExtent(IrpContext, Vcb, 
-        &FileInfo->Dloc->DataLoc, 0, 
-        (uint32)(FileInfo->Dloc->DataLoc.Length), 
+        &FileInfo->Dloc->DataLoc, 0, DataLength,
         FALSE, FEBuf + FELen
     );
 }
