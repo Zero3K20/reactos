@@ -2919,6 +2919,7 @@ UDFCreateFile__(
     UDF_DIR_SCAN_CONTEXT ScanContext;
     PDIR_INDEX_HDR hDirNdx = DirInfo->Dloc->DirIndex;
     PDIR_INDEX_ITEM DirNdx;
+    uint32 LBS = Vcb->SectorSize;
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     BOOLEAN undel = FALSE;
