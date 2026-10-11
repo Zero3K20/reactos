@@ -1043,6 +1043,167 @@ UDFNormalizeStreamSuffix(
     UDFRaiseStatus(IrpContext, STATUS_OBJECT_NAME_INVALID);
 }
 
+static NTSTATUS
+UDFCheckCreateParameters(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp,
+    PVCB Vcb,
+    PIO_STACK_LOCATION IrpSp,
+    ULONG CreateDisposition,
+    BOOLEAN OpenTargetDirectory
+    )
+{
+    ULONG Options = IrpSp->Parameters.Create.Options;
+
+    if (FlagOn(Vcb->VcbState, VCB_STATE_MEDIA_WRITE_PROTECT | VCB_STATE_VOLUME_READ_ONLY)) {
+        if (CreateDisposition == FILE_OVERWRITE_IF ||
+            CreateDisposition == FILE_SUPERSEDE ||
+            CreateDisposition == FILE_CREATE ||
+            CreateDisposition == FILE_OVERWRITE ||
+            OpenTargetDirectory ||
+            FlagOn(Options, FILE_DELETE_ON_CLOSE)) {
+            if (FlagOn(Vcb->VcbState, VCB_STATE_MEDIA_WRITE_PROTECT)) {
+                IoSetHardErrorOrVerifyDevice(IrpContext->Irp, Vcb->Vpb->RealDevice);
+                IrpContext->ExceptionStatus = STATUS_MEDIA_WRITE_PROTECTED;
+                ExRaiseStatus(STATUS_MEDIA_WRITE_PROTECTED);
+            }
+
+            return FlagOn(Vcb->VcbState, VCB_STATE_MOUNTED_DIRTY)
+                       ? STATUS_VOLUME_DIRTY : STATUS_ACCESS_DENIED;
+        }
+    }
+
+    if (FlagOn(Options, FILE_DELETE_ON_CLOSE) &&
+        (OpenTargetDirectory || FlagOn(Options, FILE_OPEN_BY_FILE_ID))) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (IrpSp->Parameters.Create.EaLength || Irp->AssociatedIrp.SystemBuffer) {
+        return STATUS_EAS_NOT_SUPPORTED;
+    }
+
+    if (FlagOn(IrpSp->Flags, SL_OPEN_PAGING_FILE)) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+    if (FlagOn(Options, FILE_OPEN_REQUIRING_OPLOCK)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+#endif
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFOpenVolume(
+    PIRP_CONTEXT IrpContext,
+    PIO_STACK_LOCATION IrpSp,
+    PVCB Vcb,
+    ACCESS_MASK DesiredAccess,
+    BOOLEAN OpenTargetDirectory,
+    BOOLEAN DirectoryFile,
+    BOOLEAN DeleteOnClose,
+    ULONG CreateDisposition,
+    PFCB *CurrentFcb
+    )
+{
+    if ((CreateDisposition != FILE_OPEN) &&
+        (CreateDisposition != FILE_OPEN_IF)) {
+        return STATUS_ACCESS_DENIED;
+    }
+
+    if (OpenTargetDirectory || DirectoryFile) {
+        return STATUS_NOT_A_DIRECTORY;
+    }
+
+    if (DeleteOnClose) {
+        return STATUS_CANNOT_DELETE;
+    }
+
+    if (FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY) &&
+        FlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC)) {
+        return STATUS_ACCESS_DENIED;
+    }
+
+    if (CreateDisposition == FILE_SUPERSEDE ||
+        CreateDisposition == FILE_OVERWRITE ||
+        CreateDisposition == FILE_OVERWRITE_IF ||
+        CreateDisposition == FILE_CREATE) {
+        return STATUS_ACCESS_DENIED;
+    }
+
+    *CurrentFcb = Vcb->VolumeDasdFcb;
+    UDFAcquireFcbExclusive(IrpContext, *CurrentFcb, FALSE);
+
+    return UDFCompleteFcbOpen(IrpContext,
+                              IrpSp,
+                              Vcb,
+                              CurrentFcb,
+                              UserVolumeOpen,
+                              0,
+                              CreateDisposition,
+                              FALSE,
+                              FILE_OPENED);
+}
+
+static NTSTATUS
+UDFOpenFinalDirEntry(
+    PIRP_CONTEXT IrpContext,
+    PIO_STACK_LOCATION IrpSp,
+    PVCB Vcb,
+    PDIR_ENUM_CONTEXT DirContext,
+    PFILE_OBJECT RelatedFileObject,
+    PFCB NextFcb,
+    PUDF_FILE_INFO RelatedFileInfo,
+    PFCB *CurrentFcb,
+    PFCB *PreviousFcb,
+    BOOLEAN IgnoreCase,
+    BOOLEAN NonDirectoryFile,
+    BOOLEAN DirectoryFile,
+    ULONG CreateDisposition,
+    PUDF_FILE_INFO *NewFileInfo,
+    PFCB *PtrNewFcb
+    )
+{
+    if (!DirContext->DirNdx) {
+        BrutePoint();
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    {
+        BOOLEAN IsDirectory = !!(DirContext->DirNdx->FileCharacteristics & FILE_DIRECTORY);
+        if ((FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_TRAIL_BACKSLASH) || DirectoryFile) &&
+            !IsDirectory) {
+            return STATUS_NOT_A_DIRECTORY;
+        }
+        if (IsDirectory &&
+            (NonDirectoryFile ||
+             (CreateDisposition == FILE_SUPERSEDE) ||
+             (CreateDisposition == FILE_OVERWRITE) ||
+             (CreateDisposition == FILE_OVERWRITE_IF))) {
+            return STATUS_FILE_IS_A_DIRECTORY;
+        }
+    }
+
+    if (DirContext->DirNdx->FileCharacteristics & FILE_METADATA) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (CreateDisposition == FILE_CREATE) {
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+
+    return UDFOpenObjectFromDirContext(
+        IrpContext, IrpSp, Vcb, DirContext,
+        RelatedFileInfo,
+        CurrentFcb, PreviousFcb,
+        IgnoreCase, TRUE, CreateDisposition,
+        0,
+        RelatedFileObject, NextFcb,
+        NULL,
+        NewFileInfo, PtrNewFcb);
+}
+
 /*************************************************************************
 *
 * Function: UDFCommonCreate()
@@ -1157,71 +1318,12 @@ UDFCommonCreate(
 
     Irp->IoStatus.Information = 0;
 
-    // Check if the volume is read - only or write - protected and if the operation
-    // requires write access
-
-    if (FlagOn(Vcb->VcbState, VCB_STATE_MEDIA_WRITE_PROTECT | VCB_STATE_VOLUME_READ_ONLY)) {
-
-        if (CreateDisposition == FILE_OVERWRITE_IF ||
-            CreateDisposition == FILE_SUPERSEDE ||
-            CreateDisposition == FILE_CREATE ||
-            CreateDisposition == FILE_OVERWRITE ||
-            OpenTargetDirectory ||
-            FlagOn(Options, FILE_DELETE_ON_CLOSE)) {
-
-            if (FlagOn(Vcb->VcbState, VCB_STATE_MEDIA_WRITE_PROTECT)) {
-
-                IoSetHardErrorOrVerifyDevice(IrpContext->Irp, Vcb->Vpb->RealDevice);
-                IrpContext->ExceptionStatus = STATUS_MEDIA_WRITE_PROTECTED;
-                ExRaiseStatus(STATUS_MEDIA_WRITE_PROTECTED);
-            }
-
-            Status = STATUS_ACCESS_DENIED; 
-            if (FlagOn(Vcb->VcbState, VCB_STATE_MOUNTED_DIRTY)) {
-
-                Status = STATUS_VOLUME_DIRTY;
-            }
-
-            UDFCompleteRequest(IrpContext, Irp, Status);
-            return Status;
-        }
+    Status = UDFCheckCreateParameters(IrpContext, Irp, Vcb, IrpSp,
+                                      CreateDisposition, OpenTargetDirectory);
+    if (!NT_SUCCESS(Status)) {
+        UDFCompleteRequest(IrpContext, Irp, Status);
+        return Status;
     }
-
-    // Check for invalid combination of DELETE_ON_CLOSE with other flags
-
-    if (FlagOn(Options, FILE_DELETE_ON_CLOSE) &&
-        (OpenTargetDirectory || FlagOn(Options, FILE_OPEN_BY_FILE_ID))) {
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    // UDFS does not support Extended Attributes
-
-    if (IrpSp->Parameters.Create.EaLength || Irp->AssociatedIrp.SystemBuffer) {
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_EAS_NOT_SUPPORTED);
-        return STATUS_EAS_NOT_SUPPORTED;
-    }
-
-    //  UDFS does not support paging files
-
-    if (FlagOn(IrpSp->Flags, SL_OPEN_PAGING_FILE)) {
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_NOT_SUPPORTED);
-        return STATUS_NOT_SUPPORTED;
-    }
-
-#if (NTDDI_VERSION >= NTDDI_WIN7)
-
-    // UDFS does not support FILE_OPEN_REQUIRING_OPLOCK
-
-    if (FlagOn(Options, FILE_OPEN_REQUIRING_OPLOCK)) {
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-    }
-#endif
 
     // Reference our input parameters to make things easier
 
@@ -1337,71 +1439,10 @@ UDFCommonCreate(
         // If a Volume open is requested, satisfy it now
         // ****************
         if (VolumeOpen) {
-
-            // The only create disposition we allow is OPEN.
-
-            if ((CreateDisposition != FILE_OPEN) &&
-                (CreateDisposition != FILE_OPEN_IF)) {
-
-                try_return(Status = STATUS_ACCESS_DENIED);
-            }
-
-            // If a volume open is requested, perform checks to ensure that
-            // invalid options have not also been specified ...
-
-            if (OpenTargetDirectory) {
-
-                try_return(Status = STATUS_NOT_A_DIRECTORY);
-            }
-
-            // If they wanted to open a directory, surprise.
-
-            if (DirectoryFile) {
-
-                try_return(Status = STATUS_NOT_A_DIRECTORY);
-            }
-
-            // Cannot delete a volume
-
-            if (DeleteOnClose) {
-
-                try_return(Status = STATUS_CANNOT_DELETE);
-            }
-
-            if (FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY)) {
-
-                if (FlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC)) {
-
-                    try_return(Status = STATUS_ACCESS_DENIED);
-                }
-            }
-
-            // Cannot supersede, overwrite, or create a volume.
-            if (CreateDisposition == FILE_SUPERSEDE ||
-                CreateDisposition == FILE_OVERWRITE ||
-                CreateDisposition == FILE_OVERWRITE_IF ||
-                CreateDisposition == FILE_CREATE) {
-
-                try_return(Status = STATUS_ACCESS_DENIED);
-            }
-
-            CurrentFcb = Vcb->VolumeDasdFcb;
-
-            // Acquire the Fcb exclusively before completing the open
-
-            UDFAcquireFcbExclusive(IrpContext, CurrentFcb, FALSE);
-
-            Status = UDFCompleteFcbOpen(IrpContext,
-                                        IrpSp,
-                                        Vcb,
-                                        &CurrentFcb,
-                                        UserVolumeOpen,
-                                        0,
-                                        CreateDisposition,
-                                        FALSE,         // VcbLocked
-                                        FILE_OPENED);  // DesiredInformation
-
-            try_return(Status);
+            try_return(Status = UDFOpenVolume(IrpContext, IrpSp, Vcb,
+                                              DesiredAccess, OpenTargetDirectory,
+                                              DirectoryFile, DeleteOnClose,
+                                              CreateDisposition, &CurrentFcb));
         }
 
         if (UDFIllegalFcbAccess(Vcb, DesiredAccess)) {
@@ -2390,46 +2431,10 @@ UDFCommonCreate(
         }
 
         // File path — final component not yet opened, DirContext has the entry
-        if (!DirContext.DirNdx) {
-            BrutePoint();
-            try_return(Status = STATUS_OBJECT_NAME_NOT_FOUND);
-        }
-
-        {
-            BOOLEAN IsDirectory = !!(DirContext.DirNdx->FileCharacteristics & FILE_DIRECTORY);
-            // Trailing backslash or DirectoryFile: target must be a directory
-            if ((FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_TRAIL_BACKSLASH) || DirectoryFile) &&
-                !IsDirectory) {
-                try_return(Status = STATUS_NOT_A_DIRECTORY);
-            }
-            if (IsDirectory) {
-                if (NonDirectoryFile ||
-                    (CreateDisposition == FILE_SUPERSEDE) ||
-                    (CreateDisposition == FILE_OVERWRITE) ||
-                    (CreateDisposition == FILE_OVERWRITE_IF)) {
-                    try_return(Status = STATUS_FILE_IS_A_DIRECTORY);
-                }
-            }
-        }
-        // Metadata stream files (UDF 2.0) cannot be opened by name
-        if (DirContext.DirNdx->FileCharacteristics & FILE_METADATA) {
-            try_return(Status = STATUS_ACCESS_DENIED);
-        }
-        if (CreateDisposition == FILE_CREATE) {
-            try_return(Status = STATUS_OBJECT_NAME_COLLISION);
-        }
-
-        // Open the final component with PerformUserOpen=TRUE (creates FileInfo + FCB + CCB)
-        Status = UDFOpenObjectFromDirContext(
-            IrpContext, IrpSp, Vcb, &DirContext,
-            RelatedFileInfo,
-            &CurrentFcb, &PreviousFcb,
-            IgnoreCase, TRUE, CreateDisposition,
-            0,  // RemainingNameLength = 0 (final component)
-            RelatedFileObject, NextFcb,
-            NULL,  // ExistingFileInfo
-            &NewFileInfo, &PtrNewFcb);
-        try_return(Status);
+        try_return(Status = UDFOpenFinalDirEntry(
+            IrpContext, IrpSp, Vcb, &DirContext, RelatedFileObject, NextFcb, RelatedFileInfo,
+            &CurrentFcb, &PreviousFcb, IgnoreCase, NonDirectoryFile,
+            DirectoryFile, CreateDisposition, &NewFileInfo, &PtrNewFcb));
 
 try_exit:   NOTHING;
 
