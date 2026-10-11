@@ -1055,10 +1055,7 @@ UDFFindPathPrefix(
         LocalRemainingName.Length -= ComponentName.Length;
 
         //
-        // Search for matching component. Try splay trees first (O(log n)),
-        // then fall back to list iteration (O(n)) for LCBs without names,
-        // duplicate-name LCBs, or names too long for upcase buffer.
-        // *CurrentFcb is held exclusive, so trees and queue are safe.
+        // Search the splay trees for a matching component (O(log n)).
         //
         MatchLcb = NULL;
 
@@ -1103,50 +1100,10 @@ UDFFindPathPrefix(
             }
         }
 
-        // List fallback: catches LCBs without names in splay trees
-        // (NULL names, duplicates, long names) and handles deleted-link filtering.
-        if (!MatchLcb) {
-            for (PLIST_ENTRY ListEntry = (*CurrentFcb)->ChildLcbQueue.Flink;
-                 ListEntry != &(*CurrentFcb)->ChildLcbQueue;
-                 ListEntry = ListEntry->Flink) {
-
-                PLCB Lcb = CONTAINING_RECORD(ListEntry, struct LCB, ParentFcbLinks);
-
-                ASSERT(Lcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_LCB);
-                ASSERT(Lcb->ParentFcb == *CurrentFcb);
-
-                if (FlagOn(Lcb->Flags, UDF_LCB_FLAG_LINK_DELETED)) {
-                    continue;
-                }
-
-                // Try FileName (exact or case-insensitive)
-                if (Lcb->FileName.Buffer && Lcb->FileName.Length > 0 &&
-                    RtlEqualUnicodeString(&ComponentName, &Lcb->FileName, IgnoreCase)) {
-                    MatchLcb = Lcb;
-                    break;
-                }
-                // Try IgnoreCaseLinkName
-                if (IgnoreCase &&
-                    Lcb->IgnoreCaseLinkName.Buffer && Lcb->IgnoreCaseLinkName.Length > 0 &&
-                    RtlEqualUnicodeString(&ComponentName, &Lcb->IgnoreCaseLinkName, TRUE)) {
-                    MatchLcb = Lcb;
-                    break;
-                }
-                // Try ShortName
-                if (Lcb->ShortName.Buffer && Lcb->ShortName.Length > 0 &&
-                    RtlEqualUnicodeString(&ComponentName, &Lcb->ShortName, TRUE)) {
-                    MatchLcb = Lcb;
-                    *ShortNameMatch = TRUE;
-                    break;
-                }
-            }
-        }
-
         //
         // Validate the match: skip deleted links and deleted FCBs.
-        // A deleted FCB can still have LCBs in the splay tree/list if
-        // teardown hasn't run yet (between cleanup and close).
-        // Clean up stale splay entries when found.
+        // A deleted FCB can still have an LCB in the splay tree if teardown
+        // hasn't run yet (between cleanup and close).
         //
         if (MatchLcb && !FlagOn(MatchLcb->Flags, UDF_LCB_FLAG_LINK_DELETED) &&
             MatchLcb->ChildFcb &&
@@ -1159,7 +1116,8 @@ UDFFindPathPrefix(
         }
 
         if (!MatchLcb || FlagOn(MatchLcb->Flags, UDF_LCB_FLAG_LINK_DELETED)) {
-            // No match or deleted link — stop, *CurrentFcb stays locked
+            // Prefix lookup is optional; UDFCommonCreate handles misses through
+            // normal directory traversal.
             return CurrentLcb;
         }
 
