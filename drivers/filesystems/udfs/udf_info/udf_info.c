@@ -2919,11 +2919,9 @@ UDFCreateFile__(
     UDF_DIR_SCAN_CONTEXT ScanContext;
     PDIR_INDEX_HDR hDirNdx = DirInfo->Dloc->DirIndex;
     PDIR_INDEX_ITEM DirNdx;
-    uint32 LBS = Vcb->SectorSize;
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     BOOLEAN undel = FALSE;
-    SIZE_T WrittenBytes;
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
 
@@ -3171,14 +3169,6 @@ CrF__2:
         FileInfo->Dloc->DataLoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
         FileInfo->Dloc->DataLoc.Modified = TRUE;
         FileInfo->Dloc->FELoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
-        // zero sector for FileEntry
-        if (!Vcb->CDR_Mode) {
-            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, LBS, FALSE, Vcb->ZBuffer, &WrittenBytes);
-            if (!NT_SUCCESS(status)) {
-                UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
-                try_return (status);
-            }
-        }
 #if 0
         if ((i >= 2) && (DirNdx->FName.Buffer[0] == L'.')) {
             BrutePoint();
