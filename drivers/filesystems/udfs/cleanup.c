@@ -552,7 +552,10 @@ UDFCommonCleanup(
         if (NextFileInfo) {
             PUDF_FILE_INFO DirInfo = NextFileInfo->ParentFile;
             UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
-            if (DirInfo && 
+            // The delayed-close teardown flushes the parent before its FCB
+            // leaves the table; avoid repeating this write for every child.
+            if (!(Fcb->FcbState & UDF_FCB_DELAY_CLOSE) &&
+                DirInfo &&
                 DirInfo->Dloc && 
                 DirInfo->Fcb &&
                 !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&

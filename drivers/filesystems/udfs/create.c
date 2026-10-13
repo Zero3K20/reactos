@@ -2018,7 +2018,8 @@ UDFCommonCreate(
                         // Create the file on disk
                         Status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &FinalName, 0, 0,
                                              UdfIsExtendedFESupported(Vcb),
-                                             (CreateDisposition == FILE_CREATE), OldRelatedFileInfo, &NewFileInfo);
+                                             (CreateDisposition == FILE_CREATE), TRUE,
+                                             OldRelatedFileInfo, &NewFileInfo);
                         if (!NT_SUCCESS(Status)) {
                             UDFPrint(("UDF BM: UDFCreateFile__ FAILED Status=%x Dir=%d Name=%wZ\n",
                                 Status, DirectoryFile, &FinalName));
@@ -2205,7 +2206,8 @@ UDFCommonCreate(
 
             Status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &FinalName, 0, 0,
                                  UdfIsExtendedFESupported(Vcb),
-                                 (CreateDisposition == FILE_CREATE), RelatedFileInfo, &NewFileInfo);
+                                 (CreateDisposition == FILE_CREATE), TRUE,
+                                 RelatedFileInfo, &NewFileInfo);
             if (!NT_SUCCESS(Status)) {
                 AdPrint(("    Creation error\n"));
                 try_return(Status);
@@ -2315,7 +2317,7 @@ UDFCommonCreate(
                 RelatedFileInfo = NewFileInfo;
                 NewFileInfo = NULL;
                 Status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &StreamName, 0, 0,
-                         UdfIsExtendedFESupported(Vcb), (CreateDisposition == FILE_CREATE),
+                         UdfIsExtendedFESupported(Vcb), (CreateDisposition == FILE_CREATE), FALSE,
                          RelatedFileInfo, &NewFileInfo);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Can't create Stream\n"));

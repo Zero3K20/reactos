@@ -2908,6 +2908,7 @@ UDFCreateFile__(
     IN uint32 ImpUseLen,
     IN BOOLEAN Extended,
     IN BOOLEAN CreateNew,
+    IN BOOLEAN DeferInitialFlush,
  IN OUT PUDF_FILE_INFO DirInfo,
     OUT PUDF_FILE_INFO* _FileInfo
     )
@@ -3061,7 +3062,8 @@ CreateUndel:
         l = FileInfo->FileIdentLen;
         if (undel) goto CrF__2;
         // search for suitable unused (deleted) entry to reuse
-        if (UDFDirIndexInitScan(DirInfo, &ScanContext, 2)) {
+        if (hDirNdx->DelCount &&
+            UDFDirIndexInitScan(DirInfo, &ScanContext, 2)) {
             while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
                 if ((DirNdx->Length == l) && UDFIsDeleted(DirNdx) &&
                    !DirNdx->FileInfo ) {
@@ -3201,7 +3203,11 @@ CrF__2:
         FileInfo->FileIdent->fileCharacteristics = 0;
         DirNdx->FileCharacteristics = 0;
         UDFReferenceFile__(FileInfo);
-        UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        // User creates defer this write to close-time teardown. Rollback
+        // paths flush before unlinking, and rename/link callers flush here.
+        if (!DeferInitialFlush) {
+            UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        }
         if (undel)
             hDirNdx->DelCount--;
         UDFReleaseDloc(Vcb, FileInfo->Dloc);
@@ -3632,7 +3638,7 @@ UDFRenameMoveFile__(
 RenameRetry:
     if (!NT_SUCCESS(status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, fn, UDFGetFileEALength(FileInfo),
                     0, (FileInfo->Dloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY),
-                    TRUE, DirInfo2, &FileInfo2))) {
+                    TRUE, FALSE, DirInfo2, &FileInfo2))) {
         UDFCleanUpFile__(Vcb, FileInfo2);
         if (FileInfo2) MyFreePool__(FileInfo2);
         if (status == STATUS_ACCESS_DENIED) {
@@ -5392,7 +5398,7 @@ UDFHardLinkFile__(
 HLinkRetry:
     if (!NT_SUCCESS(status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, fn, UDFGetFileEALength(FileInfo),
                     0, (FileInfo->Dloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY),
-                    TRUE, DirInfo2, &FileInfo2))) {
+                    TRUE, FALSE, DirInfo2, &FileInfo2))) {
         if (UDFCleanUpFile__(Vcb, FileInfo2) && FileInfo2)
             MyFreePool__(FileInfo2);
         if (status == STATUS_ACCESS_DENIED) {

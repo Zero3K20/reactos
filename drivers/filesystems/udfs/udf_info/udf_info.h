@@ -793,6 +793,7 @@ UDFCreateFile__(
     IN uint32 ImpUseLen,
     IN BOOLEAN Extended,
     IN BOOLEAN CreateNew,
+    IN BOOLEAN DeferInitialFlush,
     IN OUT PUDF_FILE_INFO DirInfo,
     OUT PUDF_FILE_INFO* _FileInfo
     );
