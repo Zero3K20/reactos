@@ -391,13 +391,16 @@ UDFCommonCleanup(
             // If this was the last cached open, and there are open
             // non-cached handles, attempt a flush and purge operation
             // to avoid cache coherency overhead from these non-cached
-            // handles later.  We ignore any I/O errors from the flush.
+            // handles later. Also flush a zero-filled file extension on
+            // the final cleanup. We ignore any I/O errors from the flush.
             // We shall not flush deleted files
             RC = STATUS_SUCCESS;
             if (  LastNonCached
                       ||
                 (!Fcb->FcbCleanup &&
-                 !ForcedCleanUp) ) {
+                 !ForcedCleanUp &&
+                 Fcb->Header.ValidDataLength.QuadPart <
+                     Fcb->Header.FileSize.QuadPart) ) {
 
                 LONGLONG OldFileSize, NewFileSize;
 
