@@ -486,7 +486,15 @@ UDFTeardownStructures(
             if (!Delete &&
                 CurrentFcb->FileInfo &&
                 !(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
-                UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
+                if (!NT_SUCCESS(UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0))) {
+                    // Keep the FCB available so a later open can use the
+                    // in-memory metadata and a later teardown can retry.
+                    if (ParentFcb != NULL) {
+                        UDFReleaseFcb(IrpContext, ParentFcb);
+                        ParentFcb = NULL;
+                    }
+                    break;
+                }
             }
 
             //
