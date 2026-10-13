@@ -519,19 +519,6 @@ UDFCommonCleanup(
             }
         }
 
-        // Flush FE (File Entry) to disk on last cleanup of non-deleted files.
-        // This prevents a race in UDFTeardownStructures where the FCB is removed
-        // from the FCB table (line ~497) before UDFFlushFile__ writes the FE to
-        // disk (line ~520). Without this, a concurrent open between those two
-        // points reads stale FE from disk with informationLength=0.
-        if (!Fcb->FcbCleanup &&
-            !ForcedCleanUp &&
-            !(Fcb->FcbState & UDF_FCB_DELETED) &&
-            !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
-            NextFileInfo) {
-            UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
-        }
-
         if (!(Fcb->FcbState & UDF_FCB_DIRECTORY) &&
             ForcedCleanUp) {
             // flush system cache

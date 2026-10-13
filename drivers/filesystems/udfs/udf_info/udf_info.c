@@ -3389,6 +3389,14 @@ UDFCloseFile__(
     if (FileInfo->RefCount ||
        FileInfo->OpenCount ||
        !(FileInfo->Dloc->FELoc.Mapping)) return STATUS_SUCCESS;
+
+    // Delayed-close teardown flushes metadata before removing the FCB from
+    // the table, so defer this flush and keep the cleanup path asynchronous.
+    if (FileInfo->Fcb &&
+        (FileInfo->Fcb->FcbState & UDF_FCB_DELAY_CLOSE)) {
+        return STATUS_SUCCESS;
+    }
+
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if (PartNum == (uint32)-1) {
