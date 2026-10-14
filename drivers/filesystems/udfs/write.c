@@ -376,6 +376,8 @@ UDFCommonWrite(
             if (!SuccessfulPurge) {
                 try_return(Status = STATUS_PURGE_FAILED);            
             }
+
+            UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbResource);
         }
 
         // Determine if we were called by the lazywriter.
