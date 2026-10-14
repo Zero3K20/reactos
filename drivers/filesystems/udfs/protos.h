@@ -156,6 +156,12 @@ UDFFspClose(
     _In_opt_ PVCB Vcb
     );
 
+BOOLEAN
+UDFQueueMetadataUpdate(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb
+    );
+
 //extern VOID UDFRemoveFromDelayedQueue(PtrUDFFCB Fcb);
 #define UDFRemoveFromDelayedQueue(Fcb) \
     UDFCloseAllDelayedInDir((Fcb)->Vcb, (Fcb)->FileInfo)

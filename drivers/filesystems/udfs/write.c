@@ -672,8 +672,10 @@ UDFCommonWrite(
 
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
 
-            ASize = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
-            UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, &ASize);
+            if (!UDFQueueMetadataUpdate(IrpContext, Fcb)) {
+                ASize = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
+                UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, &ASize);
+            }
 
             try_return(Status);
         }

@@ -471,6 +471,7 @@ Return Value:
 
 {
     BOOLEAN RemovedFcb;
+    BOOLEAN AcquiredParentFcb = FALSE;
 
     PAGED_CODE();
 
@@ -499,6 +500,25 @@ Return Value:
         return FALSE;
     }
 
+    if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_UPDATE)) {
+        PFCB ParentFcb = Fcb->FileInfo->ParentFile ?
+                         Fcb->FileInfo->ParentFile->Fcb : NULL;
+        LONGLONG AllocationSize;
+
+        if (ParentFcb) {
+            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+            UDFAcquireFcbExclusive(IrpContext, ParentFcb, FALSE);
+            AcquiredParentFcb = TRUE;
+        }
+
+        AllocationSize = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
+        UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, &AllocationSize);
+
+        if (AcquiredParentFcb) {
+            UDFReleaseFcb(IrpContext, ParentFcb);
+        }
+    }
+
     // Lock the Vcb and decrement the reference counts.
 
     UDFLockVcb(IrpContext, Vcb);
@@ -523,6 +543,57 @@ Return Value:
     //  this request.
 
     UDFReleaseVcb(IrpContext, Vcb);
+
+    return TRUE;
+}
+
+BOOLEAN
+UDFQueueMetadataUpdate(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb
+    )
+{
+    PIRP_CONTEXT MetadataContext;
+    PVCB Vcb = Fcb->Vcb;
+    BOOLEAN StartWorker = FALSE;
+
+    PAGED_CODE();
+
+    MetadataContext = (PIRP_CONTEXT)ExAllocateFromNPagedLookasideList(
+        &UdfData.IrpContextLookasideList);
+    if (!MetadataContext) {
+        return FALSE;
+    }
+
+    RtlZeroMemory(MetadataContext, sizeof(*MetadataContext));
+    MetadataContext->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
+    MetadataContext->NodeIdentifier.NodeByteSize = sizeof(*MetadataContext);
+    MetadataContext->Flags = IRP_CONTEXT_FLAG_WAIT |
+                             IRP_CONTEXT_FLAG_METADATA_UPDATE;
+    MetadataContext->MajorFunction = IRP_MJ_CLOSE;
+    MetadataContext->Irp = (PIRP)Fcb;
+    MetadataContext->Fcb = Fcb;
+    MetadataContext->Vcb = Vcb;
+    MetadataContext->RealDevice = IrpContext->RealDevice;
+
+    UDFLockVcb(IrpContext, Vcb);
+    UDFIncrementReferenceCounts(IrpContext, Fcb, 1, 0);
+    UDFUnlockVcb(IrpContext, Vcb);
+
+    UDFLockUdfData();
+    InsertTailList(&UdfData.AsyncCloseQueue, &MetadataContext->WorkQueueItem.List);
+    UdfData.AsyncCloseCount += 1;
+
+    if (!UdfData.FspCloseActive) {
+        UdfData.FspCloseActive = TRUE;
+        StartWorker = TRUE;
+    }
+
+    UDFUnlockUdfData();
+
+    if (StartWorker) {
+        ExQueueWorkItem(&UdfData.CloseItem, CriticalWorkQueue);
+    }
 
     return TRUE;
 }
@@ -849,4 +920,3 @@ UDFQueueClose(
 
     return;
 } // end UDFQueueDelayedClose()
-
