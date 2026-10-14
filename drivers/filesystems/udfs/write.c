@@ -60,6 +60,7 @@ UDFCommonWrite(
 
     BOOLEAN                 PagingIoResourceAcquired = FALSE;
     BOOLEAN                 MainResourceAcquired = FALSE;
+    BOOLEAN                 MainResourceAcquiredExclusive = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
 
     BOOLEAN                 Wait = FALSE;
@@ -346,6 +347,7 @@ UDFCommonWrite(
             UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
 
             MainResourceAcquired = TRUE;
+            MainResourceAcquiredExclusive = TRUE;
 
             // Flush and then attempt to purge the cache
             if ((StartingOffset + TruncatedLength) > Fcb->Header.FileSize.QuadPart) {
@@ -377,7 +379,6 @@ UDFCommonWrite(
                 try_return(Status = STATUS_PURGE_FAILED);            
             }
 
-            UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbResource);
         }
 
         // Determine if we were called by the lazywriter.
@@ -515,6 +516,14 @@ UDFCommonWrite(
                 }
             }
 
+        }
+
+        if (MainResourceAcquiredExclusive &&
+            (IsLazyWriteThread ||
+             RecursiveWriteThrough ||
+             (StartingOffset + TruncatedLength <= OldVDL))) {
+            UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbResource);
+            MainResourceAcquiredExclusive = FALSE;
         }
 
         // Branch here for cached vs non-cached I/O
