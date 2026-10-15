@@ -263,6 +263,10 @@ UDFNonCachedIo(
                 return Status;
             }
         }
+
+        // Mapping changes require exclusive access; the I/O runs only need
+        // stable mappings, so let other writers proceed concurrently.
+        UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
     }
 
     //  The caller must have set up the IoContext before calling us.
