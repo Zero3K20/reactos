@@ -532,12 +532,13 @@ UDFIndexDirectory(
     hDirNdx->DIFlags |= (ExtInfo->Offset ? UDF_DI_FLAG_INIT_IN_ICB : 0);
     // add entry pointing to the directory itself
     DirNdx = UDFDirIndex(hDirNdx,0);
-    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+    uint32 FELba = UDFExtentInfoOffsetToLba(Vcb, &FileInfo->Dloc->FELoc, 0, NULL, NULL, NULL, NULL);
+    ASSERT(FELba);
     DirNdx->FileEntryLoc.partitionReferenceNum = PartNum =
-        (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+        (uint16)UDFGetRefPartNumByPhysLba(Vcb, FELba);
     ASSERT(PartNum != -1);
     DirNdx->FileEntryLoc.logicalBlockNum =
-        UDFPhysLbaToPart(Vcb, PartNum, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+        UDFPhysLbaToPart(Vcb, PartNum, FELba);
     if (DirNdx->FileEntryLoc.logicalBlockNum == (ULONG)-1) {
         DirPrint(("  err: FileEntryLoc=-1\n"));
         DbgFreePool(buff);
@@ -564,7 +565,7 @@ UDFIndexDirectory(
             UDFPrint(("  Invalid tagIdent %x (expected %x) offst %x\n", FileId->descTag.tagIdent, TID_FILE_IDENT_DESC, Offset));
             DirPrint(("    FileId: filen %x, iulen %x, charact %x\n",
                 FileId->lengthFileIdent, FileId->lengthOfImpUse, FileId->fileCharacteristics));
-            DirPrint(("    loc: @%x\n", UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset, NULL, NULL, NULL, NULL)));
+            DirPrint(("    loc: @%x\n", UDFExtentInfoOffsetToLba(Vcb, ExtInfo, Offset, NULL, NULL, NULL, NULL)));
             KdDump(FileId, sizeof(FileId->descTag));
             Offset = UDFFindNextFI(buff, prevOffset, (ULONG)(ExtInfo->Length));
             if (!Offset) {
@@ -712,8 +713,10 @@ UDFReTagDirectory(
         return STATUS_SUCCESS;
     }
 
-    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    RefPartNum = (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+    RefPartNum = (uint16)UDFGetRefPartNumByPhysLba(
+        Vcb,
+        UDFExtentInfoOffsetToLba(Vcb, &FileInfo->Dloc->FELoc, 0, NULL, NULL, NULL, NULL));
+    ASSERT(RefPartNum != (uint16)-1);
     ASSERT(RefPartNum != -1);
 
     while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
@@ -728,7 +731,7 @@ UDFReTagDirectory(
         // write modified
         UDFSetUpTag(Vcb, (tag*)Buf, (uint16)l,
                   UDFPhysLbaToPart(Vcb, RefPartNum,
-                             UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
+                             UDFExtentInfoOffsetToLba(Vcb, &FileInfo->Dloc->DataLoc,
                                         Offset, NULL, NULL, NULL, NULL)), 0);
 
         if (curFileInfo && curFileInfo->FileIdent) {
@@ -1101,19 +1104,58 @@ UDFStoreDloc(
         return STATUS_SUCCESS;
     }
     // allocate common DataLocation (Dloc) descriptor
-    Dloc = fi->Dloc = (PUDF_DATALOC_INFO)MyAllocatePoolTag__(UDF_DATALOC_INFO_MT, sizeof(UDF_DATALOC_INFO), MEM_DLOC_INF_TAG);
+    Dloc = (PUDF_DATALOC_INFO)MyAllocatePoolTag__(UDF_DATALOC_INFO_MT, sizeof(UDF_DATALOC_INFO), MEM_DLOC_INF_TAG);
     if (!Dloc) {
         UDFReleaseResource(&(Vcb->DlocResource));
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    Vcb->DlocList[i].Lba = Lba;
-    Vcb->DlocList[i].Dloc = Dloc;
     RtlZeroMemory(Dloc, sizeof(UDF_DATALOC_INFO));
+
+    Dloc->MappingResource = (PERESOURCE)MyAllocatePoolTag__(NonPagedPool, sizeof(ERESOURCE), MEM_DLOC_INF_TAG);
+    if (!Dloc->MappingResource) {
+        MyFreePool__(Dloc);
+        UDFReleaseResource(&(Vcb->DlocResource));
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    if (!NT_SUCCESS(ExInitializeResourceLite(Dloc->MappingResource))) {
+        MyFreePool__(Dloc->MappingResource);
+        MyFreePool__(Dloc);
+        UDFReleaseResource(&(Vcb->DlocResource));
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Dloc->DataLoc.MappingResource =
+    Dloc->AllocLoc.MappingResource =
+    Dloc->FELoc.MappingResource = Dloc->MappingResource;
     Dloc->LinkedFileInfo = fi;
     UDFAcquireDloc(Vcb, Dloc);
+    fi->Dloc = Dloc;
+    Vcb->DlocList[i].Lba = Lba;
+    Vcb->DlocList[i].Dloc = Dloc;
     UDFReleaseResource(&(Vcb->DlocResource));
     return STATUS_SUCCESS;
 } // end UDFStoreDloc()
+
+static
+void
+UDFDeleteDlocMappingResource(
+    IN PUDF_DATALOC_INFO Dloc
+    )
+{
+    PERESOURCE Resource = Dloc->MappingResource;
+
+    if (!Resource)
+        return;
+
+    UDFAcquireResourceExclusive(Resource, TRUE);
+    UDFReleaseResource(Resource);
+    ExDeleteResourceLite(Resource);
+    Dloc->MappingResource = NULL;
+    Dloc->DataLoc.MappingResource =
+    Dloc->AllocLoc.MappingResource =
+    Dloc->FELoc.MappingResource = NULL;
+    MyFreePool__(Resource);
+}
 
 /*
     Remove unreferenced FE location from cache & free allocated memory
@@ -1139,6 +1181,7 @@ UDFRemoveDloc(
     ASSERT(Vcb->DlocList);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     UDFReleaseResource(&(Vcb->DlocResource));
+    UDFDeleteDlocMappingResource(Dloc);
     MyFreePool__(Dloc);
     return STATUS_SUCCESS;
 } // end UDFRemoveDloc()
@@ -1189,6 +1232,7 @@ UDFFreeDloc(
         RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     }
     UDFReleaseResource(&(Vcb->DlocResource));
+    UDFDeleteDlocMappingResource(Dloc);
     MyFreePool__(Dloc);
 } // end UDFFreeDloc()
 
@@ -1222,16 +1266,24 @@ UDFReleaseDlocList(
     IN PVCB Vcb
     )
 {
+    PUDF_DATALOC_INDEX DlocList;
+    uint32 DlocCount;
+
     if (!Vcb->DlocList) return;
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
-    for(uint32 i=0; i<Vcb->DlocCount; i++) {
-        if (Vcb->DlocList[i].Dloc)
-            MyFreePool__(Vcb->DlocList[i].Dloc);
-    }
-    MyFreePool__(Vcb->DlocList);
+    DlocList = Vcb->DlocList;
+    DlocCount = Vcb->DlocCount;
     Vcb->DlocList = NULL;
     Vcb->DlocCount = 0;
     UDFReleaseResource(&(Vcb->DlocResource));
+
+    for(uint32 i=0; i<DlocCount; i++) {
+        if (DlocList[i].Dloc) {
+            UDFDeleteDlocMappingResource(DlocList[i].Dloc);
+            MyFreePool__(DlocList[i].Dloc);
+        }
+    }
+    MyFreePool__(DlocList);
 } // end UDFReleaseDlocList()
 
 /*

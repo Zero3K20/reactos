@@ -99,6 +99,9 @@ struct UDF_IO_CONTEXT {
     PIRP MasterIrp;
     volatile NTSTATUS Status;
     BOOLEAN AllocatedContext;
+    PERESOURCE MappingResource;
+    ERESOURCE_THREAD MappingResourceThreadId;
+    volatile LONG MappingResourceHeld;
 
     union {
 

@@ -57,6 +57,7 @@ typedef struct _EXTENT_INFO {
     int64       Length;   // user data
     BOOLEAN     Modified; // mapping
     UCHAR       Flags;
+    PERESOURCE  MappingResource;
 /*
     UCHAR       Reserved[2];
     PVOID       Cache;
@@ -235,6 +236,8 @@ typedef struct _DIR_INDEX_ITEM {
 */
 struct FCB;
 typedef struct _UDF_DATALOC_INFO {
+
+    PERESOURCE  MappingResource;
 
 /**
     NT-specific field. As soon as NT supports HardLink concept it

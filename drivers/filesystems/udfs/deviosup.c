@@ -200,8 +200,6 @@ UDFNonCachedIo(
     //  Embedded (in-ICB) data must be handled by the caller before
     //  reaching this point.  Assert that we have a real disk mapping.
 
-    ASSERT(ExtInfo->Offset == 0 && ExtInfo->Mapping != NULL);
-
     //  Get the mapped system address for the user buffer.
 
     UserBuffer = UDFMapUserBuffer(IrpContext->Irp);
@@ -218,6 +216,24 @@ UDFNonCachedIo(
     //  For writes: pre-scan extents and convert NOT_RECORDED to RECORDED
     //  if needed.  This must happen before building I/O runs.
     //
+
+    ASSERT(IrpContext->IoContext != NULL);
+    if (!IrpContext->IoContext)
+        return STATUS_DRIVER_INTERNAL_ERROR;
+
+    IrpContext->IoContext->MappingResource = ExtInfo->MappingResource;
+    IrpContext->IoContext->MappingResourceHeld = FALSE;
+    if (ExtInfo->MappingResource) {
+        if (IsWrite) {
+            UDFAcquireResourceExclusive(ExtInfo->MappingResource, TRUE);
+        } else {
+            UDFAcquireResourceShared(ExtInfo->MappingResource, TRUE);
+        }
+        IrpContext->IoContext->MappingResourceThreadId = ExGetCurrentResourceThread();
+        InterlockedExchange(&IrpContext->IoContext->MappingResourceHeld, TRUE);
+    }
+
+    ASSERT(ExtInfo->Offset == 0 && ExtInfo->Mapping != NULL);
 
     if (IsWrite) {
 
@@ -260,8 +276,16 @@ UDFNonCachedIo(
                                           StartingOffset, ByteCount);
 
             if (!NT_SUCCESS(Status)) {
+                if (InterlockedExchange(&IrpContext->IoContext->MappingResourceHeld, FALSE)) {
+                    ExReleaseResourceForThreadLite(IrpContext->IoContext->MappingResource,
+                                                   IrpContext->IoContext->MappingResourceThreadId);
+                }
                 return Status;
             }
+        }
+
+        if (ExtInfo->MappingResource) {
+            ExConvertExclusiveToSharedLite(ExtInfo->MappingResource);
         }
     }
 
@@ -420,6 +444,12 @@ UDFNonCachedIo(
             UDFFinishBuffers(IrpContext, IoRuns, CleanupRunCount, TRUE);
         }
 
+        if (Status != STATUS_PENDING &&
+            InterlockedExchange(&IrpContext->IoContext->MappingResourceHeld, FALSE)) {
+            ExReleaseResourceForThreadLite(IrpContext->IoContext->MappingResource,
+                                           IrpContext->IoContext->MappingResourceThreadId);
+        }
+
     } _SEH2_END;
 
     return Status;
@@ -462,12 +492,15 @@ UDFLookupAllocation(
     PVCB Vcb = Fcb->Vcb;
     PUDF_FILE_INFO FileInfo = Fcb->FileInfo;
     PEXTENT_INFO ExtInfo = &FileInfo->Dloc->DataLoc;
-    PEXTENT_MAP Extent = ExtInfo->Mapping;
+    PEXTENT_MAP Extent;
 
     uint32 SectorOff, Flags, Index;
     SIZE_T AvailLength;
 
     UNREFERENCED_PARAMETER(IrpContext);
+
+    UDFAcquireMappingResourceShared(ExtInfo);
+    Extent = ExtInfo->Mapping;
 
     uint32 Lba = UDFExtentOffsetToLba(Vcb, Extent, FileOffset,
                                       &SectorOff, &AvailLength, &Flags, &Index);
@@ -478,6 +511,7 @@ UDFLookupAllocation(
 
         *DiskOffset = 0;
         *ByteCount = 0;
+        UDFReleaseMappingResource(ExtInfo);
         return FALSE;
     }
 
@@ -488,6 +522,7 @@ UDFLookupAllocation(
         //  Unrecorded / not-allocated — sparse.
 
         *DiskOffset = 0;
+        UDFReleaseMappingResource(ExtInfo);
         return FALSE;
     }
 
@@ -502,6 +537,7 @@ UDFLookupAllocation(
 
         *DiskOffset = 0;
         *ByteCount = 0;
+        UDFReleaseMappingResource(ExtInfo);
         return FALSE;
     }
     if (RelocExtent != UDF_NO_EXTENT_MAP) {
@@ -524,6 +560,7 @@ UDFLookupAllocation(
 
     *DiskOffset = (((LONGLONG)Lba) << Vcb->SectorShift) + SectorOff;
 
+    UDFReleaseMappingResource(ExtInfo);
     return TRUE;
 }
 
@@ -564,6 +601,8 @@ UDFConvertToRecorded(
     SIZE_T AvailLength;
     ULONG ThisByteCount;
 
+    UDFAcquireMappingResourceExclusive(ExtInfo);
+
     while (Remaining != 0) {
 
         Extent = ExtInfo->Mapping;
@@ -583,6 +622,7 @@ UDFConvertToRecorded(
                          CurrentOffset, ThisByteCount, ExtInfo);
 
             if (!NT_SUCCESS(Status)) {
+                UDFReleaseMappingResource(ExtInfo);
                 return Status;
             }
 
@@ -600,6 +640,7 @@ UDFConvertToRecorded(
                          CurrentOffset, ThisByteCount, ExtInfo);
 
             if (!NT_SUCCESS(Status)) {
+                UDFReleaseMappingResource(ExtInfo);
                 return Status;
             }
         }
@@ -608,6 +649,7 @@ UDFConvertToRecorded(
         CurrentOffset += ThisByteCount;
     }
 
+    UDFReleaseMappingResource(ExtInfo);
     return STATUS_SUCCESS;
 }
 
@@ -1237,6 +1279,11 @@ UDFSingleAsyncCompletionRoutine(
     //
 
     IoMarkIrpPending(Irp);
+
+    if (InterlockedExchange(&IoContext->MappingResourceHeld, FALSE)) {
+        ExReleaseResourceForThreadLite(IoContext->MappingResource,
+                                       IoContext->MappingResourceThreadId);
+    }
 
     //
     //  Release the FCB resource that was held for the duration of the I/O.

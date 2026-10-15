@@ -66,6 +66,8 @@ UDFPrepareXSpaceBitmap(
     uint16 Ident;
     uint32 RefPartNum;
 
+    XSBMExtInfo->MappingResource = NULL;
+
     if (!(XSpaceBitmap->extLength)) {
         *XSl = 0;
         *XSBM = NULL;

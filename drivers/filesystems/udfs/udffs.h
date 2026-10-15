@@ -116,6 +116,16 @@ extern UDFData              UdfData;
 
 #include "udf_info/udf_info.h"
 
+__inline LARGE_INTEGER UDFGetNTFileId(IN PVCB Vcb,
+                                      IN PUDF_FILE_INFO FileInfo)
+{
+    uint32 Lba = UDFExtentInfoOffsetToLba(Vcb, &FileInfo->Dloc->FELoc,
+                                          0, NULL, NULL, NULL, NULL);
+
+    return UDFMakeLargeInteger((Lba - UDFPartStart(Vcb, -2)) +
+                               ((LONGLONG)((UINT_PTR)Vcb) << 32));
+}
+
 #include "protos.h"
 
 #include "Include/phys_lib.h"
@@ -407,4 +417,3 @@ UdfGetFidFromLbAddr(lb_addr lbAddr)
 }
 
 #endif  // _UDF_UDF_H_
-

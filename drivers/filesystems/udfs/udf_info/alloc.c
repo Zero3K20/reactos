@@ -371,12 +371,11 @@ UDFMetadataLbaToPhys(
     uint32 lba, flags;
 
     if (
-        !Vcb->MetadataFileInfo ||
-        !Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping
+        !Vcb->MetadataFileInfo
     )
         return LBA_OUT_OF_EXTENT;
 
-    lba = UDFExtentOffsetToLba(Vcb, Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping,
+    lba = UDFExtentInfoOffsetToLba(Vcb, &Vcb->MetadataFileInfo->Dloc->DataLoc,
                                ((int64)Lbn) << Vcb->SectorShift, NULL, &avail, &flags, NULL);
 
     if (
@@ -401,14 +400,20 @@ UDFPhysLbaToMetadata(
 )
 {
     PEXTENT_MAP Map;
+    PEXTENT_INFO ExtInfo;
+    uint32 len, off = 0;
+    uint32 Result = LBA_OUT_OF_EXTENT;
 
-    if (
-        !Vcb->MetadataFileInfo ||
-        !(Map = Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping)
-    )
+    if (!Vcb->MetadataFileInfo)
         return LBA_OUT_OF_EXTENT;
 
-    uint32 len, off = 0;    
+    ExtInfo = &Vcb->MetadataFileInfo->Dloc->DataLoc;
+    UDFAcquireMappingResourceShared(ExtInfo);
+    Map = ExtInfo->Mapping;
+    if (!Map) {
+        UDFReleaseMappingResource(ExtInfo);
+        return LBA_OUT_OF_EXTENT;
+    }
 
     for (; Map->extLength; Map++) {
         len = (Map->extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->SectorShift;
@@ -417,12 +422,16 @@ UDFPhysLbaToMetadata(
             ((Map->extLength >> 30) != EXTENT_NOT_RECORDED_NOT_ALLOCATED) &&
             (Map->extLocation <= Lba) && (Lba < Map->extLocation + len)
         )
-            return off + (Lba - Map->extLocation);
+        {
+            Result = off + (Lba - Map->extLocation);
+            break;
+        }
         
         off += len;
     }
 
-    return LBA_OUT_OF_EXTENT;
+    UDFReleaseMappingResource(ExtInfo);
+    return Result;
 }
 
 /*

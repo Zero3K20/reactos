@@ -11,6 +11,24 @@
 #include "osta_misc.h"
 #include "udf_rel.h"
 
+#define UDFAcquireMappingResourceShared(ExtInfo) \
+    do { \
+        if ((ExtInfo)->MappingResource) \
+            UDFAcquireResourceShared((ExtInfo)->MappingResource, TRUE); \
+    } while (0)
+
+#define UDFAcquireMappingResourceExclusive(ExtInfo) \
+    do { \
+        if ((ExtInfo)->MappingResource) \
+            UDFAcquireResourceExclusive((ExtInfo)->MappingResource, TRUE); \
+    } while (0)
+
+#define UDFReleaseMappingResource(ExtInfo) \
+    do { \
+        if ((ExtInfo)->MappingResource) \
+            UDFReleaseResource((ExtInfo)->MappingResource); \
+    } while (0)
+
 // convert offset in extent to Lba & calculate block parameters
 // it also returns pointer to last valid entry & flags
 uint32
@@ -21,6 +39,15 @@ UDFExtentOffsetToLba(IN PVCB Vcb,
                      OUT PSIZE_T AvailLength, // available data in this block
                      OUT uint32* Flags,
                      OUT uint32* Index);
+
+uint32
+UDFExtentInfoOffsetToLba(IN PVCB Vcb,
+                         IN PEXTENT_INFO ExtInfo,
+                         IN int64 Offset,
+                         OUT uint32* SectorOffset,
+                         OUT PSIZE_T AvailLength,
+                         OUT uint32* Flags,
+                         OUT uint32* Index);
 
 // locate frag containing specified Lba in extent
 ULONG
@@ -57,6 +84,7 @@ UDFReadExtentLocation(IN PVCB Vcb,
                       );
 // calculate total length of extent
 int64 UDFGetExtentLength(IN PEXTENT_MAP Extent);  // Extent array
+int64 UDFGetExtentInfoLength(IN PEXTENT_INFO ExtInfo);
 
 // convert compressed Unicode to standard
 VOID

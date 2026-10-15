@@ -97,10 +97,6 @@ __inline LARGE_INTEGER UDFMakeLargeInteger(LONGLONG value) {
     return result;
 }
 
-#define UDFGetNTFileId(Vcb, fi) \
-    UDFMakeLargeInteger((((fi)->Dloc->FELoc.Mapping[0].extLocation - UDFPartStart(Vcb, -2)) + \
-                      ((LONGLONG)((UINT_PTR)Vcb)<<32)))
-
 #define UnicodeIsPrint(a) RtlIsValidOemCharacter(&(a))
 
 #define UDFSysGetAllocSize(Vcb, Size) ((Size + Vcb->SectorSize - 1) & ~((LONGLONG)(Vcb->SectorSize - 1)))
