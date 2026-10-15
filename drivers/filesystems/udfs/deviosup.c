@@ -167,6 +167,10 @@ UDFNonCachedIo(
         }
         IrpContext->Vcb = Fcb->Vcb;
 
+        if (IsWrite) {
+            UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
+        }
+
         UDFSingleAsync(IrpContext, StartingOffset, ByteCount);
         if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))
         {
@@ -263,6 +267,10 @@ UDFNonCachedIo(
                 return Status;
             }
         }
+    }
+
+    if (IsWrite) {
+        UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
     }
 
     //  The caller must have set up the IoContext before calling us.

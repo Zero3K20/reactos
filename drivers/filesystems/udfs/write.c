@@ -632,12 +632,9 @@ UDFCommonWrite(
             }
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
 
-            // Acquire PagingIoResource exclusive to serialize with
-            // UDFMarkAllocatedAsRecorded which may free and replace
-            // ExtInfo->Mapping during NOT_RECORDED -> RECORDED conversion.
-            // Without this, a concurrent UDFResizeExtent (holding PagingIoResource
-            // exclusive for file extension) can use a stale Mapping pointer
-            // that was freed by our UDFMarkAllocatedAsRecorded call.
+            // Acquire PagingIoResource exclusive to serialize extent conversion
+            // with UDFResizeExtent. UDFNonCachedIo downgrades it to shared after
+            // conversion, allowing concurrent data I/O while protecting mappings.
             if (!PagingIoResourceAcquired) {
                 UDFAcquirePagingIoExclusive(IrpContext, Fcb);
                 PagingIoResourceAcquired = TRUE;
