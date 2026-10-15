@@ -2,6 +2,12 @@ name: "Pull Request Labeler"
 on:
 - pull_request_target
 
+# The default GITHUB_TOKEN is read-only in this repository, so the
+# labeler needs explicit write access to set labels on pull requests.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   triage:
     runs-on: ubuntu-latest
