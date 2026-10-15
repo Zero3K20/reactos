@@ -288,23 +288,26 @@ UDFCommonRead(
 
         // Handle I/O at EOF synchronization
 
-        ExAcquireFastMutex(Fcb->Header.FastMutex);
-        
-        if (!PagingIo &&
-            FlagOn(Fcb->Header.Flags, FSRTL_FLAG_EOF_ADVANCE_ACTIVE) &&
-            ByteRange > Fcb->Header.ValidDataLength.QuadPart &&
-            StartingOffset < Fcb->Header.FileSize.QuadPart) {
-            
-            if (UDFWaitForIoAtEof(Fcb, StartingOffset, ByteCount)) {
-                UDFFinishIoAtEof(Fcb);
+        if (!PagingIo) {
+            ExAcquireFastMutex(Fcb->Header.FastMutex);
+
+            if (FlagOn(Fcb->Header.Flags, FSRTL_FLAG_EOF_ADVANCE_ACTIVE) &&
+                ByteRange > Fcb->Header.ValidDataLength.QuadPart &&
+                StartingOffset < Fcb->Header.FileSize.QuadPart) {
+
+                if (UDFWaitForIoAtEof(Fcb, StartingOffset, ByteCount)) {
+                    UDFFinishIoAtEof(Fcb);
+                }
             }
+
+            // Capture current file size
+            FileSize = Fcb->Header.FileSize.QuadPart;
+
+            ExReleaseFastMutex(Fcb->Header.FastMutex);
+        } else {
+            // Paging I/O holds FcbPagingIoResource shared, which serializes file-size changes.
+            FileSize = Fcb->Header.FileSize.QuadPart;
         }
-
-        // Capture current file size
-
-        FileSize = Fcb->Header.FileSize.QuadPart;
-
-        ExReleaseFastMutex(Fcb->Header.FastMutex);
 
         ByteCount = ReadLength;
 
