@@ -403,7 +403,7 @@ UDFCommonWrite(
             // Try to acquire the FCB MainResource shared
             if (NonCachedIo) {
                 if (!MainResourceAcquired) {
-                    if (!UDFAcquireSharedWaitForExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                    if (!UDFAcquireSharedStarveExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
                         try_return(Status = STATUS_PENDING);
                     }
                     MainResourceAcquired = TRUE;
@@ -411,7 +411,7 @@ UDFCommonWrite(
             } else {
                 if (!MainResourceAcquired) {
                     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                    if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                    if (!UDFAcquireSharedStarveExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
                         try_return(Status = STATUS_PENDING);
                     }
                     MainResourceAcquired = TRUE;
