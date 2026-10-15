@@ -879,15 +879,19 @@ struct VOLUME_DEVICE_OBJECT {
     __volatile ULONG PostedRequestCount;
 
     // The following field indicates the number of IRP's waiting
-    // to be serviced in the overflow queue.
+    // to be serviced in the overflow queues.
 
     ULONG OverflowQueueCount;
 
-    // The following field contains the queue header of the overflow queue.
-    // The Overflow queue is a list of IRP's linked via the IRP's ListEntry
-    // field.
+    // The number of read and write IRP's in the overflow I/O queue.
+
+    ULONG IoQueueCount;
+
+    // The following fields contain the queue headers. Other requests are
+    // linked in OverflowQueue and read/write requests in IoQueue.
 
     LIST_ENTRY OverflowQueue;
+    LIST_ENTRY IoQueue;
 
     // The following spinlock protects access to all the above fields.
 

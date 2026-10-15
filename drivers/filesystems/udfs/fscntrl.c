@@ -407,7 +407,9 @@ UDFMountVolume(
         // Initialize the overflow queue for the volume
 
         VolDo->OverflowQueueCount = 0;
+        VolDo->IoQueueCount = 0;
         InitializeListHead(&VolDo->OverflowQueue);
+        InitializeListHead(&VolDo->IoQueue);
 
         VolDo->PostedRequestCount = 0;
         KeInitializeSpinLock(&VolDo->OverflowQueueSpinLock);

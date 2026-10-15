@@ -860,8 +860,18 @@ UDFAddToWorkque(
             // We cannot currently respond to this IRP so we'll just enqueue it
             // to the overflow queue on the volume.
 
-            InsertTailList(&Vdo->OverflowQueue,
-                           &IrpContext->WorkQueueItem.List);
+            if ((IrpContext->MajorFunction == IRP_MJ_READ) ||
+                (IrpContext->MajorFunction == IRP_MJ_WRITE)) {
+
+                InsertTailList(&Vdo->IoQueue,
+                               &IrpContext->WorkQueueItem.List);
+                Vdo->IoQueueCount += 1;
+
+            } else {
+
+                InsertTailList(&Vdo->OverflowQueue,
+                               &IrpContext->WorkQueueItem.List);
+            }
 
             Vdo->OverflowQueueCount += 1;
 
@@ -1130,7 +1140,18 @@ UDFFspDispatch(
 
             KeAcquireSpinLock(&VolDo->OverflowQueueSpinLock, &SavedIrql);
 
-            if (VolDo->OverflowQueueCount > 0) {
+            if (VolDo->IoQueueCount > 0) {
+
+                //
+                //  Read and write requests take priority over other overflow requests.
+                //
+
+                VolDo->OverflowQueueCount -= 1;
+                VolDo->IoQueueCount -= 1;
+                Entry = RemoveHeadList(&VolDo->IoQueue);
+
+            }
+            else if (VolDo->OverflowQueueCount > 0) {
 
                 //
                 //  There is overflow work to do in this volume so we'll
