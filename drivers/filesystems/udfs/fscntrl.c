@@ -453,9 +453,7 @@ UDFMountVolume(
 
         Vcb->MountPhErrorCount = 0;
 
-        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         RC = UDFGetDiskInfoAndVerify(IrpContext, DeviceObjectWeTalkTo,Vcb);
-        UDFReleaseResource(&(Vcb->BitMapResource1));
 
         ASSERT(!Vcb->Modified);
 
