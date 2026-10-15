@@ -151,6 +151,7 @@ UDFNonCachedIo(
     BOOLEAN FlushIoBuffers = FALSE;
     BOOLEAN FirstPass = TRUE;
     BOOLEAN IsWrite = (IrpContext->MajorFunction == IRP_MJ_WRITE);
+    BOOLEAN PagingIoResourceShared = FALSE;
 
     //  Validate preconditions.
 
@@ -263,6 +264,12 @@ UDFNonCachedIo(
                 return Status;
             }
         }
+    }
+
+    if (IsWrite) {
+
+        UDFConvertExclusiveToSharedLite(Fcb->Header.PagingIoResource);
+        PagingIoResourceShared = TRUE;
     }
 
     //  The caller must have set up the IoContext before calling us.
@@ -418,6 +425,12 @@ UDFNonCachedIo(
         if (CleanupRunCount != 0) {
 
             UDFFinishBuffers(IrpContext, IoRuns, CleanupRunCount, TRUE);
+        }
+
+        if (PagingIoResourceShared) {
+
+            UDFReleaseResource(Fcb->Header.PagingIoResource);
+            UDFAcquireResourceExclusive(Fcb->Header.PagingIoResource, TRUE);
         }
 
     } _SEH2_END;
