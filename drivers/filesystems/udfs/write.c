@@ -672,6 +672,14 @@ UDFCommonWrite(
 
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
 
+            if (!(Fcb->FcbState & UDF_FCB_EMBEDDED_DATA)) {
+                // Serialize extent metadata updates after allowing concurrent data I/O.
+                UDFReleasePagingIo(IrpContext, Fcb);
+                PagingIoResourceAcquired = FALSE;
+                ExAcquireResourceExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+                PagingIoResourceAcquired = TRUE;
+            }
+
             ASize = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
             UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, &ASize);
 

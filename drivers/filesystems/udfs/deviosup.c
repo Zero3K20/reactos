@@ -263,6 +263,8 @@ UDFNonCachedIo(
                 return Status;
             }
         }
+
+        UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
     }
 
     //  The caller must have set up the IoContext before calling us.
