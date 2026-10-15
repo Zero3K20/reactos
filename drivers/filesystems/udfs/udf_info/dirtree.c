@@ -374,13 +374,11 @@ UDFBuildHashEntry(
 
     if (Mask & HASH_ULFN) {
 
-        UName.Length = 0;
-        UName.MaximumLength = Name->Length;
-        UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
-
-        RtlUpcaseUnicodeString(&UName, Name, FALSE);
-        hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
-        ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
+        // Hash the upcased name in place. The old code allocated a copy
+        // of Name->Length bytes, which is a zero-sized allocation for an
+        // empty name and then frees a NULL/invalid pointer (BSOD 0xC4/0x10
+        // under Driver Verifier).
+        hashes->hLfn = crc32_upcase(Name->Buffer, Name->Length);
     }
 
     if (Mask & HASH_DOS) {

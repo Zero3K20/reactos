@@ -5186,6 +5186,29 @@ crc32(
 } // end crc32()
 
 /*
+    Same as crc32() over an upcased copy of a unicode string, but
+    upcases one character at a time, so no buffer has to be allocated.
+ */
+uint32
+__fastcall
+crc32_upcase(
+    IN PWCHAR s,
+    IN uint32 len
+    )
+{
+    uint32 i;
+    uint32 crc32val = 0;
+    WCHAR c;
+
+    for(i=0; i<len/sizeof(WCHAR); i++) {
+        c = RtlUpcaseUnicodeChar(s[i]);
+        crc32val = crc32_tab[(crc32val ^ (uint8)(c & 0xff)) & 0xff] ^ (crc32val >> 8);
+        crc32val = crc32_tab[(crc32val ^ (uint8)(c >> 8)) & 0xff] ^ (crc32val >> 8);
+    }
+    return crc32val;
+} // end crc32_upcase()
+
+/*
     Calculate a 16-bit CRC checksum for unicode strings
     using ITU-T V.41 polynomial.
 

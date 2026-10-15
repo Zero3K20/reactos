@@ -1073,6 +1073,10 @@ UDFUnicodeCksum150(PWCHAR s,
 uint32
 __fastcall crc32(IN uint8* s,
             IN uint32 len);
+// crc32 of the upcased string, without allocating a buffer
+uint32
+__fastcall crc32_upcase(IN PWCHAR s,
+            IN uint32 len);
 // calculate a 16-bit CRC checksum using ITU-T V.41 polynomial
 uint16 __fastcall UDFCrc(IN uint8 *Data, IN SIZE_T Size, IN uint16 Crc);
 
