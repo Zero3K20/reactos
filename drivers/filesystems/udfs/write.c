@@ -665,12 +665,7 @@ UDFCommonWrite(
                                   NotificationEvent,
                                   FALSE);
 
-                UDFConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
                 Status = UDFNonCachedIo(IrpContext, Fcb, StartingOffset, TruncatedLength);
-                UDFReleasePagingIo(IrpContext, Fcb);
-                PagingIoResourceAcquired = FALSE;
-                ExAcquireResourceExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
-                PagingIoResourceAcquired = TRUE;
                 IrpContext->IoContext = NULL;
                 NumberBytesWritten = (ULONG)Irp->IoStatus.Information;
             }

@@ -150,6 +150,7 @@ UDFNonCachedIo(
     BOOLEAN SparseRuns;
     BOOLEAN FlushIoBuffers = FALSE;
     BOOLEAN FirstPass = TRUE;
+    BOOLEAN PagingIoResourceShared = FALSE;
     BOOLEAN IsWrite = (IrpContext->MajorFunction == IRP_MJ_WRITE);
 
     //  Validate preconditions.
@@ -325,6 +326,18 @@ UDFNonCachedIo(
             RunCount = CleanupRunCount;
 
             //
+            //  Extent mappings must stay protected while resolving disk runs.
+            //  Once this batch has been mapped, shared access is sufficient
+            //  during the transfer; exclusive access is restored before the
+            //  next batch is prepared.
+            //
+
+            if (IsWrite && Wait) {
+                ExConvertExclusiveToSharedLite(&Fcb->FcbNonpaged->FcbPagingIoResource);
+                PagingIoResourceShared = TRUE;
+            }
+
+            //
             //  No runs — all sparse, we are done.
             //
 
@@ -353,6 +366,12 @@ UDFNonCachedIo(
 
                     UDFWaitSync(IrpContext);
                     Status = IrpContext->Irp->IoStatus.Status;
+
+                    if (PagingIoResourceShared) {
+                        UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+                        PagingIoResourceShared = FALSE;
+                        ExAcquireResourceExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+                    }
 
                 } else {
 
@@ -383,6 +402,12 @@ UDFNonCachedIo(
             //
 
             UDFWaitSync(IrpContext);
+
+            if (PagingIoResourceShared) {
+                UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+                PagingIoResourceShared = FALSE;
+                ExAcquireResourceExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+            }
 
             Status = IrpContext->Irp->IoStatus.Status;
 
@@ -434,6 +459,12 @@ UDFNonCachedIo(
         }
 
     } _SEH2_FINALLY {
+
+        if (PagingIoResourceShared) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+            PagingIoResourceShared = FALSE;
+            ExAcquireResourceExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+        }
 
         //
         //  Perform final cleanup on the IoRuns if necessary.
