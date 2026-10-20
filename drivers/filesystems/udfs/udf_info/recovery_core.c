@@ -280,9 +280,11 @@ typedef struct _RECOVERY_GRAPH {
     const UDFS_RECOVERY_READER *Reader;
     UDFS_RECOVERY_PROBE *Result;
     const RECOVERY_EXTENT_LIST *Metadata;
+    const RECOVERY_EXTENT_LIST *MetadataMirror;
     const RECOVERY_EXTENT_LIST *BitmapFile;
     RECOVERY_BITMAP PhysicalOwned;
     uint8_t *MetadataOwned;
+    uint8_t *MetadataMirrorFallbacks;
     RECOVERY_BITMAP PhysicalVisited;
     uint8_t *MetadataVisited;
     RECOVERY_BITMAP PhysicalDirs;
@@ -573,6 +575,42 @@ GraphReadLogical(RECOVERY_GRAPH *graph, uint16_t ref,
         return UdfsRecoveryProbeUnsupported;
     }
     return ReadSector(graph->Reader, graph->Result, physical, sector);
+}
+
+static UDFS_RECOVERY_PROBE_STATUS
+GraphReadFileEntry(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
+                   uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE])
+{
+    UDFS_RECOVERY_PROBE_STATUS status, primaryStatus;
+    uint32_t mirrorLba;
+    uint16_t kind;
+
+    status = GraphReadLogical(graph, file->Ref, file->Lbn, sector);
+    if (status == UdfsRecoveryProbeValidLayout) {
+        kind = Read16(sector);
+        status = (kind == 261 || kind == 266) ?
+            ValidateTag(sector, kind, file->Lbn) : UdfsRecoveryProbeCorrupt;
+    }
+    if (status == UdfsRecoveryProbeValidLayout ||
+        file->Ref != 1 || !graph->Result->MetadataDuplicated)
+        return status;
+
+    primaryStatus = status;
+    status = MapMetadataBlock(graph->Result, graph->MetadataMirror,
+                              file->Lbn, &mirrorLba);
+    if (status != UdfsRecoveryProbeValidLayout)
+        return primaryStatus;
+    status = ReadSector(graph->Reader, graph->Result, mirrorLba, sector);
+    if (status != UdfsRecoveryProbeValidLayout)
+        return primaryStatus;
+    kind = Read16(sector);
+    if ((kind != 261 && kind != 266) ||
+        ValidateTag(sector, kind, file->Lbn) != UdfsRecoveryProbeValidLayout)
+        return primaryStatus;
+
+    SetBit(graph->MetadataMirrorFallbacks, file->Lbn);
+    graph->Result->FailureLba = 0;
+    return UdfsRecoveryProbeValidLayout;
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -916,13 +954,9 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
     status = GraphVisit(graph, file, &alreadyVisited);
     if (status != UdfsRecoveryProbeValidLayout || alreadyVisited)
         return status;
-    status = GraphReadLogical(graph, file->Ref, file->Lbn, fe);
+    status = GraphReadFileEntry(graph, file, fe);
     if (status != UdfsRecoveryProbeValidLayout) return status;
     kind = Read16(fe);
-    if (kind != 261 && kind != 266)
-        return UdfsRecoveryProbeCorrupt;
-    status = ValidateTag(fe, kind, file->Lbn);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
     if (fe[27] != (file->Directory ? 4 : 5))
         return UdfsRecoveryProbeCorrupt;
     if (!Read16(fe + 48)) return UdfsRecoveryProbeCorrupt;
@@ -988,6 +1022,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     graph.Reader = reader;
     graph.Result = result;
     graph.Metadata = mainFile;
+    graph.MetadataMirror = mirrorFile;
     graph.BitmapFile = bitmapFile;
     graph.ScratchExtents = (RECOVERY_EXTENT_LIST *)reader->Allocate(
         reader->Context, sizeof(*graph.ScratchExtents));
@@ -1009,9 +1044,11 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                                                       metadataBytes);
     graph.MetadataInlineFileFes = (uint8_t *)reader->Allocate(
         reader->Context, metadataBytes);
+    graph.MetadataMirrorFallbacks = (uint8_t *)reader->Allocate(
+        reader->Context, metadataBytes);
     if (!graph.ScratchExtents || !graph.MetadataOwned ||
         !graph.MetadataVisited || !graph.MetadataDirs ||
-        !graph.MetadataInlineFileFes) {
+        !graph.MetadataInlineFileFes || !graph.MetadataMirrorFallbacks) {
         status = UdfsRecoveryProbeNoMemory;
         goto done;
     }
@@ -1019,6 +1056,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     memset(graph.MetadataVisited, 0, metadataBytes);
     memset(graph.MetadataDirs, 0, metadataBytes);
     memset(graph.MetadataInlineFileFes, 0, metadataBytes);
+    memset(graph.MetadataMirrorFallbacks, 0, metadataBytes);
 
     for (i = 0; i < mainFile->Count; ++i) {
         status = GraphOwn(&graph, 0, mainFile->Items[i].Lbn,
@@ -1128,7 +1166,8 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         if (status != UdfsRecoveryProbeValidLayout) goto done;
         if ((value >> (i & 7)) & 1) {
             if (BitIsSet(graph.MetadataOwned, i)) {
-                if (result->MetadataDuplicated) {
+                if (result->MetadataDuplicated &&
+                    !BitIsSet(graph.MetadataMirrorFallbacks, i)) {
                     uint32_t mainLba, mirrorLba;
                     status = MapMetadataBlock(result, mainFile, i, &mainLba);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
@@ -1181,6 +1220,8 @@ done:
     if (graph.MetadataDirs) reader->Free(reader->Context, graph.MetadataDirs);
     if (graph.MetadataInlineFileFes)
         reader->Free(reader->Context, graph.MetadataInlineFileFes);
+    if (graph.MetadataMirrorFallbacks)
+        reader->Free(reader->Context, graph.MetadataMirrorFallbacks);
     return status;
 }
 
