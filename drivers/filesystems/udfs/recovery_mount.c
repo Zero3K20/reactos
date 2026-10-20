@@ -270,9 +270,10 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
         UdfsRecoveryMountFree(&io, plan);
         return STATUS_SUCCESS;
     }
-    UDFPrint(("UDFS recovery: %lu referenced-free blocks, %lu bitmap sectors\n",
+    UDFPrint(("UDFS recovery: %lu referenced-free blocks, %lu bitmap sectors, %lu mirror sectors\n",
               (ULONG)before.ReferencedFreeMetadataBlocks,
-              (ULONG)plan->BitmapEditCount));
+              (ULONG)plan->BitmapEditCount,
+              (ULONG)plan->MirrorEditCount));
     UDFPrint(("UDFS recovery: metadata-only repair; unflushed file contents are not recovered\n"));
     UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryApplyRepair(&reader, plan, &after);

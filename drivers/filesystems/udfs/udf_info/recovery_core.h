@@ -1,6 +1,7 @@
 /* Bounded UDF recovery core. Probe and planning are read-only. Apply may
- * perform only the separately validated ordered bitmap/LVID sector edits.
- * Keep this core independent of NT I/O for stopped-image cross-checks. */
+ * perform only separately validated, ordered metadata-mirror, bitmap, and
+ * LVID sector edits. Keep this core independent of NT I/O for stopped-image
+ * cross-checks. */
 #ifndef UDFS_RECOVERY_CORE_H
 #define UDFS_RECOVERY_CORE_H
 
@@ -10,6 +11,7 @@
 #define UDFS_RECOVERY_SECTOR_SIZE 512U
 #define UDFS_RECOVERY_MAX_EXTENTS 128U
 #define UDFS_RECOVERY_MAX_REPAIR_BLOCKS 4U
+#define UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS 64U
 
 typedef int (*UdfsRecoveryReadSector)(void *context, uint32_t lba,
                                       uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE]);
@@ -72,11 +74,13 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint32_t ReferencedFreePhysicalBlocks;
     uint32_t ReferencedFreeMetadataBlocks;
     uint32_t ReferencedFreeInlineFileFeBlocks;
+    uint32_t MirrorMismatchBlocks;
     uint32_t UnownedPhysicalBlocks;
     uint32_t UnownedMetadataBlocks;
     uint32_t FirstReferencedFreePhysicalLbn;
     uint32_t FirstReferencedFreeMetadataLbn;
     uint32_t ReferencedFreeMetadataLbn[UDFS_RECOVERY_MAX_REPAIR_BLOCKS];
+    uint32_t MirrorMismatchLbn[UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS];
     uint32_t FirstUnownedPhysicalLbn;
     uint32_t FirstUnownedMetadataLbn;
     uint32_t OverlapBlocks;
@@ -100,11 +104,20 @@ typedef struct _UDFS_RECOVERY_SECTOR_EDIT {
     uint8_t After[UDFS_RECOVERY_SECTOR_SIZE];
 } UDFS_RECOVERY_SECTOR_EDIT;
 
+typedef struct _UDFS_RECOVERY_MIRROR_EDIT {
+    uint32_t SourceLba;
+    uint32_t DestinationLba;
+    uint8_t Before[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t After[UDFS_RECOVERY_SECTOR_SIZE];
+} UDFS_RECOVERY_MIRROR_EDIT;
+
 /* Planning is read-only. These bytes must never be written until a separate
  * caller establishes exclusive access, durable ordering and retry semantics. */
 typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     uint32_t BitmapEditCount;
     UDFS_RECOVERY_SECTOR_EDIT BitmapEdits[UDFS_RECOVERY_MAX_REPAIR_BLOCKS];
+    uint32_t MirrorEditCount;
+    UDFS_RECOVERY_MIRROR_EDIT MirrorEdits[UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS];
     UDFS_RECOVERY_SECTOR_EDIT LvidEdit;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;

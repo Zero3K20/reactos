@@ -244,6 +244,19 @@ MapMetadataBlock(const UDFS_RECOVERY_PROBE *result,
     return UdfsRecoveryProbeCorrupt;
 }
 
+static UDFS_RECOVERY_PROBE_STATUS
+RecordMirrorMismatch(UDFS_RECOVERY_PROBE *result, uint32_t block)
+{
+    uint32_t i;
+    for (i = 0; i < result->MirrorMismatchBlocks; ++i)
+        if (result->MirrorMismatchLbn[i] == block)
+            return UdfsRecoveryProbeValidLayout;
+    if (result->MirrorMismatchBlocks == UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS)
+        return UdfsRecoveryProbeUnsupported;
+    result->MirrorMismatchLbn[result->MirrorMismatchBlocks++] = block;
+    return UdfsRecoveryProbeValidLayout;
+}
+
 typedef struct _RECOVERY_GRAPH_ENTRY {
     uint32_t Lbn;
     uint32_t Bytes;
@@ -1137,13 +1150,12 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                     status = ReadSector(reader, result, mainLba, fsd);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
                     status = ReadSector(reader, result, mirrorLba,
-                                        graph.PhysicalBitmapCache.Data);
+                                       graph.PhysicalBitmapCache.Data);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
                     if (RecoveryDifference(fsd, graph.PhysicalBitmapCache.Data,
                                UDFS_RECOVERY_SECTOR_SIZE) != 0) {
-                        result->FailureLba = mainLba;
-                        status = UdfsRecoveryProbeCorrupt;
-                        goto done;
+                        status = RecordMirrorMismatch(result, i);
+                        if (status != UdfsRecoveryProbeValidLayout) goto done;
                     }
                     result->ReferencedFreeMirrorBlocksCompared++;
                 }
@@ -1551,9 +1563,8 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
             if (status != UdfsRecoveryProbeValidLayout) goto done;
             if (RecoveryDifference(mainSector, mirrorSector,
                        UDFS_RECOVERY_SECTOR_SIZE) != 0) {
-                result->FailureLba = mainLba;
-                status = UdfsRecoveryProbeCorrupt;
-                goto done;
+                status = RecordMirrorMismatch(result, i);
+                if (status != UdfsRecoveryProbeValidLayout) goto done;
             }
             result->AllocatedMirrorBlocksCompared++;
         }
@@ -1625,6 +1636,11 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     if (status == UdfsRecoveryProbeValidLayout &&
         !result->LvidCountersMatch)
         status = UdfsRecoveryProbeLvidMismatch;
+    else if (status == UdfsRecoveryProbeValidLayout &&
+             result->MirrorMismatchBlocks) {
+        /* Repair planning may use the main stream only after this graph pass. */
+        status = UdfsRecoveryProbeGraphMismatch;
+    }
     /* Probing is read-only. Any checkpoint still requires a repair plan,
      * lower-device barriers and verification by UdfsRecoveryApplyRepair. */
 done:
@@ -1640,6 +1656,8 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
                           UDFS_RECOVERY_REPAIR_PLAN *plan)
 {
     RECOVERY_EXTENT_LIST *bitmapFile = NULL;
+    RECOVERY_EXTENT_LIST *mainFile = NULL;
+    RECOVERY_EXTENT_LIST *mirrorFile = NULL;
     UDFS_RECOVERY_PROBE check;
     UDFS_RECOVERY_PROBE_STATUS status;
     UDFS_RECOVERY_SECTOR_EDIT *edit;
@@ -1678,6 +1696,8 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         (probe->Status != UdfsRecoveryProbeValidLayout &&
          probe->Status != UdfsRecoveryProbeGraphMismatch &&
          probe->Status != UdfsRecoveryProbeLvidMismatch) ||
+        probe->MirrorMismatchBlocks >
+            UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS ||
         (!probe->CompleteOwnershipGraph &&
          probe->ReferencedFreeMetadataBlocks == 0))
         return UdfsRecoveryProbeUnsupported;
@@ -1692,10 +1712,13 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
      * the barriers in ApplyRepair must complete before a writable mount.
      * This does not recover application data that was never flushed. */
     coherentCheckpoint =
-        probe->Status == UdfsRecoveryProbeValidLayout &&
         probe->CompleteOwnershipGraph && probe->LvidCountersMatch &&
         missing == 0 && staleFree == 0 && staleFiles == 0 &&
-        probe->LvidNextUniqueId > probe->MaxUniqueId;
+        probe->LvidNextUniqueId > probe->MaxUniqueId &&
+        ((probe->MirrorMismatchBlocks == 0 &&
+          probe->Status == UdfsRecoveryProbeValidLayout) ||
+         (probe->MirrorMismatchBlocks != 0 &&
+          probe->Status == UdfsRecoveryProbeGraphMismatch));
     /* Keep the existing bounded create repair and interrupted-retry classes
      * separate from the already coherent checkpoint. */
     if (!(coherentCheckpoint ||
@@ -1715,10 +1738,44 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     check = *probe;
     bitmapFile = (RECOVERY_EXTENT_LIST *)reader->Allocate(reader->Context,
                                                           sizeof(*bitmapFile));
-    if (!bitmapFile) return UdfsRecoveryProbeNoMemory;
+    mainFile = (RECOVERY_EXTENT_LIST *)reader->Allocate(reader->Context,
+                                                         sizeof(*mainFile));
+    mirrorFile = (RECOVERY_EXTENT_LIST *)reader->Allocate(reader->Context,
+                                                           sizeof(*mirrorFile));
+    if (!bitmapFile || !mainFile || !mirrorFile) {
+        status = UdfsRecoveryProbeNoMemory;
+        goto done;
+    }
     status = ReadFileExtents(reader, &check, probe->MetadataBitmapFeLbn,
                              252, bitmapFile);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
+    status = ReadFileExtents(reader, &check, probe->MetadataMainFeLbn,
+                             250, mainFile);
+    if (status != UdfsRecoveryProbeValidLayout) goto done;
+    status = ReadFileExtents(reader, &check, probe->MetadataMirrorFeLbn,
+                             251, mirrorFile);
+    if (status != UdfsRecoveryProbeValidLayout) goto done;
+
+    for (i = 0; i < probe->MirrorMismatchBlocks; ++i) {
+        UDFS_RECOVERY_MIRROR_EDIT *mirrorEdit =
+            &plan->MirrorEdits[plan->MirrorEditCount];
+        uint32_t block = probe->MirrorMismatchLbn[i];
+        status = MapMetadataBlock(probe, mainFile, block,
+                                  &mirrorEdit->SourceLba);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        status = MapMetadataBlock(probe, mirrorFile, block,
+                                  &mirrorEdit->DestinationLba);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        status = ReadSector(reader, &check, mirrorEdit->SourceLba,
+                            mirrorEdit->After);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        status = ReadSector(reader, &check, mirrorEdit->DestinationLba,
+                            mirrorEdit->Before);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        if (RecoveryDifference(mirrorEdit->After, mirrorEdit->Before,
+                               UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            plan->MirrorEditCount++;
+    }
 
     for (i = 0; i < probe->ReferencedFreeMetadataBlocks; ++i) {
         uint32_t lbn = probe->ReferencedFreeMetadataLbn[i];
@@ -1798,7 +1855,9 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     if (status == UdfsRecoveryProbeValidLayout)
         plan->Ready = 1;
 done:
-    reader->Free(reader->Context, bitmapFile);
+    if (bitmapFile) reader->Free(reader->Context, bitmapFile);
+    if (mainFile) reader->Free(reader->Context, mainFile);
+    if (mirrorFile) reader->Free(reader->Context, mirrorFile);
     if (status != UdfsRecoveryProbeValidLayout)
         memset(plan, 0, sizeof(*plan));
     return status;
@@ -1817,6 +1876,7 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
         !reader->Flush || !reader->Allocate || !reader->Free ||
         !plan || !after || !plan->Ready ||
         plan->BitmapEditCount > UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
+        plan->MirrorEditCount > UDFS_RECOVERY_MAX_MIRROR_REPAIR_BLOCKS ||
         plan->LvidEdit.Lba >= reader->SectorCount ||
         ValidateTag(plan->LvidEdit.Before, 9,
                     plan->LvidEdit.Lba) != UdfsRecoveryProbeValidLayout ||
@@ -1829,6 +1889,30 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
     memset(after, 0, sizeof(*after));
     /* Verify the complete plan before the first mutation. A stale plan must
      * be regenerated from a fresh ownership graph. */
+    for (i = 0; i < plan->MirrorEditCount; ++i) {
+        const UDFS_RECOVERY_MIRROR_EDIT *edit = &plan->MirrorEdits[i];
+        if (edit->SourceLba >= reader->SectorCount ||
+            edit->DestinationLba >= reader->SectorCount ||
+            edit->SourceLba == edit->DestinationLba ||
+            edit->DestinationLba == plan->LvidEdit.Lba ||
+            RecoveryDifference(edit->Before, edit->After,
+                               UDFS_RECOVERY_SECTOR_SIZE) == 0)
+            return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < i; ++j)
+            if (edit->DestinationLba ==
+                plan->MirrorEdits[j].DestinationLba)
+                return UdfsRecoveryProbeInvalidInput;
+        status = ReadSector(reader, after, edit->SourceLba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, edit->After,
+                               UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+        status = ReadSector(reader, after, edit->DestinationLba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, edit->Before,
+                               UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+    }
     for (i = 0; i < plan->BitmapEditCount; ++i) {
         const UDFS_RECOVERY_SECTOR_EDIT *edit = &plan->BitmapEdits[i];
         if (edit->Lba >= reader->SectorCount ||
@@ -1838,6 +1922,9 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
             return UdfsRecoveryProbeInvalidInput;
         for (j = 0; j < i; ++j)
             if (edit->Lba == plan->BitmapEdits[j].Lba)
+                return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < plan->MirrorEditCount; ++j)
+            if (edit->Lba == plan->MirrorEdits[j].DestinationLba)
                 return UdfsRecoveryProbeInvalidInput;
         status = ReadSector(reader, after, edit->Lba, sector);
         if (status != UdfsRecoveryProbeValidLayout) return status;
@@ -1850,6 +1937,23 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
     if (RecoveryDifference(sector, plan->LvidEdit.Before,
                UDFS_RECOVERY_SECTOR_SIZE) != 0)
         return UdfsRecoveryProbeCorrupt;
+
+    /* Restore the redundant copy before committing allocation and LVID state. */
+    for (i = 0; i < plan->MirrorEditCount; ++i)
+        if (reader->WriteSector(reader->Context,
+                                plan->MirrorEdits[i].DestinationLba,
+                                plan->MirrorEdits[i].After) != 0)
+            return UdfsRecoveryProbeIoError;
+    if (plan->MirrorEditCount && reader->Flush(reader->Context) != 0)
+        return UdfsRecoveryProbeIoError;
+    for (i = 0; i < plan->MirrorEditCount; ++i) {
+        status = ReadSector(reader, after,
+                            plan->MirrorEdits[i].DestinationLba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, plan->MirrorEdits[i].After,
+                               UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeIoError;
+    }
 
     for (i = 0; i < plan->BitmapEditCount; ++i)
         if (reader->WriteSector(reader->Context,
