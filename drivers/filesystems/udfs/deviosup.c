@@ -714,6 +714,12 @@ UDFPrepareBuffers(
 
         if (!Recorded) {
 
+            // A write must never turn the caller's source buffer into zeros;
+            // every extent has been converted to recorded beforehand.
+            if (IrpContext->MajorFunction == IRP_MJ_WRITE) {
+                ExRaiseStatus(STATUS_FILE_CORRUPT_ERROR);
+            }
+
             *RunCount -= 1;
 
             RtlZeroMemory(CurrentUserBuffer, CurrentByteCount);

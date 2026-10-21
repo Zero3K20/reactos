@@ -633,6 +633,13 @@ UDFCommonWrite(
 
             MmPrint(("    Write NonCachedIo\n"));
 
+            // Post the request before touching ValidDataLength or zeroing
+            // anything, so the retry in the Fsp sees the original state
+            if (!Wait) {
+
+                try_return(Status = STATUS_PENDING);
+            }
+
             // We needn't call CcZeroData here (like in Fat driver)
             // 'cause we've already done it above
             // (see call to UDFZeroDataEx() )
@@ -650,12 +657,6 @@ UDFCommonWrite(
             }
             if (OldVDL < (StartingOffset + TruncatedLength)) {
                 Fcb->Header.ValidDataLength.QuadPart = StartingOffset + TruncatedLength;
-            }
-
-            // Send the request to lower level drivers
-            if (!Wait) {
-
-                try_return(Status = STATUS_PENDING);
             }
 
             // Lock the callers buffer
