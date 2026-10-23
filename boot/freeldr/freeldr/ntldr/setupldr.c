@@ -27,7 +27,7 @@ DBG_DEFAULT_CHANNEL(WINDOWS);
 #endif
 
 // TODO: Move to .h
-VOID
+BOOLEAN
 AllocateAndInitLPB(
     IN USHORT VersionToBoot,
     OUT PLOADER_PARAMETER_BLOCK* OutLoaderBlock);
@@ -696,7 +696,8 @@ LoadReactOSSetup(
         UiResetForSOS();
 
     /* Allocate and minimally-initialize the Loader Parameter Block */
-    AllocateAndInitLPB(_WIN32_WINNT_WS03, &LoaderBlock);
+    if (!AllocateAndInitLPB(_WIN32_WINNT_WS03, &LoaderBlock))
+        return ENOEXEC;
 
     /* Allocate and initialize the setup loader block */
     SetupBlock = &WinLdrSystemBlock->SetupBlock;

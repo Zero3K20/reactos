@@ -71,6 +71,7 @@ OSLoadingMethods[] =
     {"Windows"     , EditCustomBootNTOS, MenuNTOptions, LoadAndBootWindows},
     {"Windows2003" , EditCustomBootNTOS, MenuNTOptions, LoadAndBootWindows},
     {"WindowsVista", EditCustomBootNTOS, MenuNTOptions, LoadAndBootWindows},
+    {"Windows7"    , EditCustomBootNTOS, MenuNTOptions, LoadAndBootWindows},
     {"ReactOSSetup", EditCustomBootReactOSSetup, MenuNTOptions, LoadReactOSSetup},
 };
 
