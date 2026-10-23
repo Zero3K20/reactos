@@ -27,6 +27,12 @@ extern HEADLESS_LOADER_BLOCK LoaderRedirectionInformation;
 extern BOOLEAN WinLdrTerminalConnected;
 extern VOID WinLdrSetupEms(_In_ PCSTR BootOptions);
 
+#ifdef _M_IX86
+#define WIN7_KERNEL_STACK_SIZE  0x3000
+#define WIN7_INITIAL_OBJECT_SIZE (2 * MM_PAGE_SIZE) // >= sizeof(EPROCESS)/sizeof(ETHREAD)
+#define WIN7_KPCR_PRCB_OFFSET   0x120 // offsetof(KPCR, PrcbData)
+#endif
+
 PLOADER_SYSTEM_BLOCK WinLdrSystemBlock;
 /**/PCWSTR BootFileSystem = NULL;/**/
 
@@ -326,6 +332,36 @@ WinLdrInitializePhase1(
 
         WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7.Size = sizeof(LOADER_PARAMETER_BLOCK_WIN7);
         WinLdrSystemBlock->LoaderVersions->ExtensionWin7.Size = sizeof(LOADER_PARAMETER_EXTENSION_WIN7);
+
+#ifdef _M_IX86
+        /*
+         * Unlike the ReactOS kernel, the Windows 7 kernel does not create
+         * its own initial stack, process and thread: the loader must provide them.
+         */
+        {
+            PVOID KernelStack, InitialProcess, InitialThread;
+
+            KernelStack = MmAllocateMemoryWithType(WIN7_KERNEL_STACK_SIZE,
+                                                   LoaderStartupKernelStack);
+            InitialProcess = MmAllocateMemoryWithType(WIN7_INITIAL_OBJECT_SIZE,
+                                                      LoaderMemoryData);
+            InitialThread = MmAllocateMemoryWithType(WIN7_INITIAL_OBJECT_SIZE,
+                                                     LoaderMemoryData);
+            if (!KernelStack || !InitialProcess || !InitialThread)
+            {
+                UiMessageBox("Could not allocate the initial kernel stack/process/thread.");
+                return;
+            }
+            RtlZeroMemory(KernelStack, WIN7_KERNEL_STACK_SIZE);
+            RtlZeroMemory(InitialProcess, WIN7_INITIAL_OBJECT_SIZE);
+            RtlZeroMemory(InitialThread, WIN7_INITIAL_OBJECT_SIZE);
+
+            LoaderBlock->KernelStack = (ULONG_PTR)PaToVa(KernelStack) + WIN7_KERNEL_STACK_SIZE;
+            LoaderBlock->Prcb = KIP0PCRADDRESS + WIN7_KPCR_PRCB_OFFSET;
+            LoaderBlock->Process = (ULONG_PTR)PaToVa(InitialProcess);
+            LoaderBlock->Thread = (ULONG_PTR)PaToVa(InitialThread);
+        }
+#endif
     }
 
     /* Set the headless block pointer */
