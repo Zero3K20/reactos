@@ -476,6 +476,7 @@ typedef struct _TPM_BOOT_ENTROPY_LDR_RESULT
     ULONGLONG Time;
     ULONG EntropyLength;
     UCHAR EntropyData[40];
+    ULONG Padding; /* Match the MSVC 8-byte alignment of ULONGLONG on x86 */
 } TPM_BOOT_ENTROPY_LDR_RESULT, *PTPM_BOOT_ENTROPY_LDR_RESULT;
 
 typedef enum _BOOT_ENTROPY_SOURCE_RESULT_CODE
