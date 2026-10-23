@@ -95,6 +95,18 @@ AllocateAndInitLPB(
 
     RtlZeroMemory(WinLdrSystemBlock, sizeof(LOADER_SYSTEM_BLOCK));
 
+    WinLdrSystemBlock->LoaderVersions = MmAllocateMemoryWithType(sizeof(*WinLdrSystemBlock->LoaderVersions),
+                                                                 LoaderSystemBlock);
+    if (WinLdrSystemBlock->LoaderVersions == NULL)
+    {
+        UiMessageBox("Failed to allocate memory for system block versions!");
+        MmFreeMemory(WinLdrSystemBlock);
+        WinLdrSystemBlock = NULL;
+        return;
+    }
+
+    RtlZeroMemory(WinLdrSystemBlock->LoaderVersions, sizeof(*WinLdrSystemBlock->LoaderVersions));
+
     LoaderBlock = &WinLdrSystemBlock->LoaderBlock;
     LoaderBlock->NlsData = &WinLdrSystemBlock->NlsDataBlock;
 
@@ -118,6 +130,27 @@ AllocateAndInitLPB(
     InitializeListHead(&LoaderBlock->BootDriverListHead);
 
     *OutLoaderBlock = LoaderBlock;
+}
+
+static VOID
+RelocateList(PLIST_ENTRY Destination, PLIST_ENTRY Source)
+{
+    PLIST_ENTRY First = Source->Flink;
+    PLIST_ENTRY Last = Source->Blink;
+    if (!First || !Last)
+        return;
+
+    /* Empty list: the head must point to itself, not to the old head */
+    if (First == Source)
+    {
+        InitializeListHead(Destination);
+        return;
+    }
+
+    First->Blink = Destination;
+    Last->Flink = Destination;
+
+    *Destination = *Source;
 }
 
 // Init "phase 1"
@@ -265,6 +298,9 @@ WinLdrInitializePhase1(
         // FIXME: Extension->AcpiTableSize;
     }
 
+    InitializeListHead(&Extension->FirmwareDescriptorListHead);
+    List_PaToVa(&Extension->FirmwareDescriptorListHead);
+
     if (OperatingSystemVersion >= _WIN32_WINNT_VISTA)
     {
         Extension->BootViaWinload = 1;
@@ -272,6 +308,24 @@ WinLdrInitializePhase1(
 
         InitializeListHead(&Extension->BootApplicationPersistentData);
         List_PaToVa(&Extension->BootApplicationPersistentData);
+    }
+
+    if (OperatingSystemVersion == _WIN32_WINNT_WIN7)
+    {
+        InitializeListHead(&WinLdrSystemBlock->LoaderVersions->ExtensionWin7.AttachedHives);
+        List_PaToVa(&WinLdrSystemBlock->LoaderVersions->ExtensionWin7.AttachedHives);
+
+        WinLdrSystemBlock->LoaderVersions->ExtensionWin7.TpmBootEntropyResult.ResultCode = TpmBootEntropyNoTpmFound;
+        WinLdrSystemBlock->LoaderVersions->ExtensionWin7.TpmBootEntropyResult.ResultStatus = STATUS_NOT_IMPLEMENTED;
+
+        WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7.Extension =
+            PaToVa(&WinLdrSystemBlock->LoaderVersions->ExtensionWin7);
+
+        WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7.OsMajorVersion = (OperatingSystemVersion & 0xFF00) >> 8;
+        WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7.OsMinorVersion = OperatingSystemVersion & 0xFF;
+
+        WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7.Size = sizeof(LOADER_PARAMETER_BLOCK_WIN7);
+        WinLdrSystemBlock->LoaderVersions->ExtensionWin7.Size = sizeof(LOADER_PARAMETER_EXTENSION_WIN7);
     }
 
     /* Set the headless block pointer */
@@ -305,6 +359,8 @@ WinLdrLoadDeviceDriver(PLIST_ENTRY LoadOrderListHead,
                        PLDR_DATA_TABLE_ENTRY *DriverDTE)
 {
     CHAR FullPath[1024];
+    CHAR FullFileName[1024];
+    CHAR ArcPath[1024];
     CHAR DriverPath[1024];
     CHAR DllName[1024];
     PCHAR DriverNamePos;
@@ -340,10 +396,10 @@ WinLdrLoadDeviceDriver(PLIST_ENTRY LoadOrderListHead,
     }
 
     // It's not loaded, we have to load it
-    RtlStringCbPrintfA(FullPath, sizeof(FullPath), "%s%wZ", BootPath, FilePath);
+    RtlStringCbPrintfA(ArcPath, sizeof(ArcPath), "%s%wZ", BootPath, FilePath);
 
-    NtLdrOutputLoadMsg(FullPath, NULL);
-    Success = PeLdrLoadImage(FullPath, LoaderBootDriver, &DriverBase);
+    NtLdrOutputLoadMsg(ArcPath, NULL);
+    Success = PeLdrLoadImage(ArcPath, LoaderBootDriver, &DriverBase);
     if (!Success)
     {
         ERR("PeLdrLoadImage('%s') failed\n", DllName);
@@ -351,9 +407,10 @@ WinLdrLoadDeviceDriver(PLIST_ENTRY LoadOrderListHead,
     }
 
     // Allocate a DTE for it
+    RtlStringCbPrintfA(FullFileName, sizeof(FullFileName), "\\SystemRoot\\%s%s", DriverPath, DllName);
     Success = PeLdrAllocateDataTableEntry(LoadOrderListHead,
                                           DllName,
-                                          DllName,
+                                          FullFileName,
                                           PaToVa(DriverBase),
                                           DriverDTE);
     if (!Success)
@@ -371,8 +428,9 @@ WinLdrLoadDeviceDriver(PLIST_ENTRY LoadOrderListHead,
     (*DriverDTE)->Flags |= Flags;
 
     // Look for any dependencies it may have, and load them too
-    RtlStringCbPrintfA(FullPath, sizeof(FullPath), "%s%s", BootPath, DriverPath);
-    Success = PeLdrScanImportDescriptorTable(LoadOrderListHead, FullPath, *DriverDTE);
+    RtlStringCbPrintfA(ArcPath, sizeof(ArcPath), "%s%s", BootPath, DriverPath);
+    RtlStringCbPrintfA(FullPath, sizeof(FullPath), "\\SystemRoot\\%s", DriverPath);
+    Success = PeLdrScanImportDescriptorTable(LoadOrderListHead, FullPath, ArcPath, *DriverDTE);
     if (!Success)
     {
         /* Cleanup and bail out */
@@ -526,6 +584,7 @@ PVOID
 LoadModule(
     _Inout_ PLIST_ENTRY LoadOrderListHead,
     _In_ PCSTR Path,
+    _In_ PCSTR ArcPath,
     _In_ PCSTR File,
     _In_ PCSTR ImportName, // BaseDllName
     _In_ TYPE_OF_MEMORY MemoryType,
@@ -534,6 +593,7 @@ LoadModule(
 {
     BOOLEAN Success;
     CHAR FullFileName[MAX_PATH];
+    CHAR ArcFileName[MAX_PATH];
     CHAR ProgressString[256];
     PVOID BaseAddress;
 
@@ -543,8 +603,11 @@ LoadModule(
     RtlStringCbCopyA(FullFileName, sizeof(FullFileName), Path);
     RtlStringCbCatA(FullFileName, sizeof(FullFileName), File);
 
-    NtLdrOutputLoadMsg(FullFileName, NULL);
-    Success = PeLdrLoadImage(FullFileName, MemoryType, &BaseAddress);
+    RtlStringCbCopyA(ArcFileName, sizeof(ArcFileName), ArcPath);
+    RtlStringCbCatA(ArcFileName, sizeof(ArcFileName), File);
+
+    NtLdrOutputLoadMsg(ArcFileName, NULL);
+    Success = PeLdrLoadImage(ArcFileName, MemoryType, &BaseAddress);
     if (!Success)
     {
         ERR("PeLdrLoadImage('%s') failed\n", File);
@@ -560,7 +623,7 @@ LoadModule(
     if (!Success)
     {
         /* Cleanup and bail out */
-        ERR("PeLdrAllocateDataTableEntry('%s') failed\n", FullFileName);
+        ERR("PeLdrAllocateDataTableEntry('%s') failed\n", ArcFileName);
         MmFreeMemory(BaseAddress);
         return NULL;
     }
@@ -746,6 +809,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
     PVOID KernelBase, HalBase, KdDllBase = NULL, BootVidBase = NULL;
     PLDR_DATA_TABLE_ENTRY HalDTE, KdDllDTE = NULL, BootVidDTE = NULL;
     PCSTR ModuleName;
+    CHAR ArcPath[MAX_PATH];
     CHAR DirPath[MAX_PATH];
     CHAR HalFileName[MAX_PATH];
     CHAR KernelFileName[MAX_PATH];
@@ -753,8 +817,11 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
     CHAR BootVidName[MAX_PATH];
 
     /* Initialize SystemRoot\System32 path */
-    RtlStringCbCopyA(DirPath, sizeof(DirPath), BootPath);
-    RtlStringCbCatA(DirPath, sizeof(DirPath), "system32\\");
+    RtlStringCbCopyA(DirPath, sizeof(DirPath), "\\SystemRoot\\system32\\");
+
+    /* Initialize SystemRoot\System32 arc path */
+    RtlStringCbCopyA(ArcPath, sizeof(ArcPath), BootPath);
+    RtlStringCbCatA(ArcPath, sizeof(ArcPath), "system32\\");
 
     /* Parse the boot options */
     TRACE("LoadWindowsCore: BootOptions '%s'\n", BootOptions);
@@ -878,7 +945,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
 
     /* Load the Kernel */
     KernelBase = LoadModule(&LoaderBlock->LoadOrderListHead,
-                            DirPath, KernelFileName,
+                            DirPath, ArcPath, KernelFileName,
                             "ntoskrnl.exe", LoaderSystemCode,
                             KernelDTE, 30);
     if (!KernelBase)
@@ -890,7 +957,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
 
     /* Load the HAL */
     HalBase = LoadModule(&LoaderBlock->LoadOrderListHead,
-                         DirPath, HalFileName,
+                         DirPath, ArcPath, HalFileName,
                          "hal.dll", LoaderHalCode,
                          &HalDTE, 35);
     if (!HalBase)
@@ -967,7 +1034,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
 
         /* Load the KD DLL. Override its base DLL name to the default "KDCOM.DLL". */
         KdDllBase = LoadModule(&LoaderBlock->LoadOrderListHead,
-                               DirPath, KdDllName,
+                               DirPath, ArcPath, KdDllName,
                                "kdcom.dll", LoaderSystemCode,
                                &KdDllDTE, 40);
         if (!KdDllBase)
@@ -982,7 +1049,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
                 RtlStringCbCopyA(KdDllName, sizeof(KdDllName), "kdcom.dll");
 
                 KdDllBase = LoadModule(&LoaderBlock->LoadOrderListHead,
-                                       DirPath, KdDllName,
+                                       DirPath, ArcPath, KdDllName,
                                        "kdcom.dll", LoaderSystemCode,
                                        &KdDllDTE, 40);
             }
@@ -1019,7 +1086,7 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
 
         /* Load the BootVid */
         BootVidBase = LoadModule(&LoaderBlock->LoadOrderListHead,
-                                 DirPath, BootVidName,
+                                 DirPath, ArcPath, BootVidName,
                                  "bootvid.dll", LoaderSystemCode,
                                  &BootVidDTE, 45);
         if (!BootVidBase)
@@ -1032,24 +1099,24 @@ LoadWindowsCore(IN USHORT OperatingSystemVersion,
 
     /* Load all referenced DLLs for Kernel, HAL, Kernel Debugger Transport and BootVid */
     ModuleName = KernelFileName;
-    Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, *KernelDTE);
+    Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, ArcPath, *KernelDTE);
     if (!Success)
         goto Quit;
     ModuleName = HalFileName;
-    Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, HalDTE);
+    Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, ArcPath, HalDTE);
     if (!Success)
         goto Quit;
     if (KdDllDTE)
     {
         ModuleName = KdDllName;
-        Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, KdDllDTE);
+        Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, ArcPath, KdDllDTE);
         if (!Success)
             goto Quit;
     }
     if (BootVidDTE)
     {
         ModuleName = BootVidName;
-        Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, BootVidDTE);
+        Success = PeLdrScanImportDescriptorTable(&LoaderBlock->LoadOrderListHead, DirPath, ArcPath, BootVidDTE);
         if (!Success)
             goto Quit;
     }
@@ -1214,6 +1281,10 @@ LoadAndBootWindows(
     else if (_stricmp(ArgValue, "WindowsVista") == 0)
     {
         OperatingSystemVersion = _WIN32_WINNT_VISTA;
+    }
+    else if (_stricmp(ArgValue, "Windows7") == 0)
+    {
+        OperatingSystemVersion = _WIN32_WINNT_WIN7;
     }
     else
     {
@@ -1380,6 +1451,7 @@ LoadAndBootWindowsCommon(
     _In_ PCSTR SystemPartition,
     _In_ PCSTR BootPath)
 {
+    PVOID KernelLoaderBlock;
     PLOADER_PARAMETER_BLOCK LoaderBlockVA;
     BOOLEAN Success;
     PLDR_DATA_TABLE_ENTRY KernelDTE;
@@ -1445,7 +1517,7 @@ LoadAndBootWindowsCommon(
 
     /* Save entry-point pointer and Loader block VAs */
     KiSystemStartup = (KERNEL_ENTRY_POINT)KernelDTE->EntryPoint;
-    LoaderBlockVA = PaToVa(LoaderBlock);
+    KernelLoaderBlock = LoaderBlockVA = PaToVa(LoaderBlock);
 
     /* "Stop all motors", change videomode */
     MachPrepareForReactOS();
@@ -1492,8 +1564,70 @@ LoadAndBootWindowsCommon(
     /* Save final value of LoaderPagesSpanned */
     LoaderBlock->Extension->LoaderPagesSpanned = MmGetLoaderPagesSpanned();
 
-    TRACE("Hello from paged mode, KiSystemStartup %p, LoaderBlockVA %p!\n",
-          KiSystemStartup, LoaderBlockVA);
+    if (OperatingSystemVersion == _WIN32_WINNT_WIN7)
+    {
+        PLOADER_PARAMETER_BLOCK_WIN7 LoaderBlockWin7 = PaToVa(&WinLdrSystemBlock->LoaderVersions->LoaderBlockWin7);
+        PLOADER_PARAMETER_EXTENSION_WIN7 ExtensionWin7 = PaToVa(&WinLdrSystemBlock->LoaderVersions->ExtensionWin7);
+
+        /* LoaderBlock */
+        RelocateList(&LoaderBlockWin7->LoadOrderListHead, &LoaderBlockVA->LoadOrderListHead);
+        RelocateList(&LoaderBlockWin7->MemoryDescriptorListHead, &LoaderBlockVA->MemoryDescriptorListHead);
+        RelocateList(&LoaderBlockWin7->BootDriverListHead, &LoaderBlockVA->BootDriverListHead);
+
+        LoaderBlockWin7->KernelStack = LoaderBlockVA->KernelStack;
+        LoaderBlockWin7->Prcb = LoaderBlockVA->Prcb;
+        LoaderBlockWin7->Process = LoaderBlockVA->Process;
+        LoaderBlockWin7->Thread = LoaderBlockVA->Thread;
+
+        LoaderBlockWin7->RegistryLength = LoaderBlockVA->RegistryLength;
+        LoaderBlockWin7->RegistryBase = LoaderBlockVA->RegistryBase;
+
+        LoaderBlockWin7->ConfigurationRoot = LoaderBlockVA->ConfigurationRoot;
+
+        LoaderBlockWin7->ArcBootDeviceName = LoaderBlockVA->ArcBootDeviceName;
+        LoaderBlockWin7->ArcHalDeviceName = LoaderBlockVA->ArcHalDeviceName;
+        LoaderBlockWin7->NtBootPathName = LoaderBlockVA->NtBootPathName;
+        LoaderBlockWin7->NtHalPathName = LoaderBlockVA->NtHalPathName;
+        LoaderBlockWin7->LoadOptions = LoaderBlockVA->LoadOptions;
+
+        LoaderBlockWin7->NlsData = LoaderBlockVA->NlsData;
+        LoaderBlockWin7->ArcDiskInformation = LoaderBlockVA->ArcDiskInformation;
+
+        LoaderBlockWin7->OemFontFile = LoaderBlockVA->OemFontFile;
+
+        LoaderBlockWin7->u = LoaderBlockVA->u;
+        // LoaderBlockWin7->FirmwareInformation = NULL;
+
+        /* LoaderExtension */
+        ExtensionWin7->Profile = LoaderBlockVA->Extension->Profile;
+
+        ExtensionWin7->EmInfFileImage = LoaderBlockVA->Extension->EmInfFileImage;
+        ExtensionWin7->EmInfFileSize = LoaderBlockVA->Extension->EmInfFileSize;
+
+        ExtensionWin7->LoaderPagesSpanned = LoaderBlockVA->Extension->LoaderPagesSpanned;
+
+        ExtensionWin7->HeadlessLoaderBlock = LoaderBlockVA->Extension->HeadlessLoaderBlock;
+
+        ExtensionWin7->DrvDBImage = LoaderBlockVA->Extension->DrvDBImage;
+        ExtensionWin7->DrvDBSize = LoaderBlockVA->Extension->DrvDBSize;
+
+        RelocateList(&ExtensionWin7->FirmwareDescriptorListHead, &LoaderBlockVA->Extension->FirmwareDescriptorListHead);
+
+        ExtensionWin7->AcpiTable = LoaderBlockVA->Extension->AcpiTable;
+        ExtensionWin7->AcpiTableSize = LoaderBlockVA->Extension->AcpiTableSize;
+
+        ExtensionWin7->LastBootSucceeded = 1;
+        ExtensionWin7->IoPortAccessSupported = 1;
+
+        ExtensionWin7->LoaderPerformanceData = LoaderBlockVA->Extension->LoaderPerformanceData;
+
+        RelocateList(&ExtensionWin7->BootApplicationPersistentData, &LoaderBlockVA->Extension->BootApplicationPersistentData);
+
+        KernelLoaderBlock = LoaderBlockWin7;
+    }
+
+    TRACE("Hello from paged mode, KiSystemStartup %p, KernelLoaderBlock %p!\n",
+          KiSystemStartup, KernelLoaderBlock);
 
     /* Zero KI_USER_SHARED_DATA page */
     RtlZeroMemory((PVOID)KI_USER_SHARED_DATA, MM_PAGE_SIZE);
@@ -1505,7 +1639,7 @@ LoadAndBootWindowsCommon(
 #endif
 
     /* Pass control */
-    (*KiSystemStartup)(LoaderBlockVA);
+    (*KiSystemStartup)(KernelLoaderBlock);
 
     UNREACHABLE; // return ESUCCESS;
 }
@@ -1513,12 +1647,13 @@ LoadAndBootWindowsCommon(
 VOID
 WinLdrpDumpMemoryDescriptors(PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
-    PLIST_ENTRY NextMd;
+    PLIST_ENTRY NextMd, EndList;
     PMEMORY_ALLOCATION_DESCRIPTOR MemoryDescriptor;
 
     NextMd = LoaderBlock->MemoryDescriptorListHead.Flink;
+    EndList = LoaderBlock->MemoryDescriptorListHead.Blink->Flink;
 
-    while (NextMd != &LoaderBlock->MemoryDescriptorListHead)
+    while (NextMd != EndList)
     {
         MemoryDescriptor = CONTAINING_RECORD(NextMd, MEMORY_ALLOCATION_DESCRIPTOR, ListEntry);
 
@@ -1532,12 +1667,13 @@ WinLdrpDumpMemoryDescriptors(PLOADER_PARAMETER_BLOCK LoaderBlock)
 VOID
 WinLdrpDumpBootDriver(PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
-    PLIST_ENTRY NextBd;
+    PLIST_ENTRY NextBd, EndList;
     PBOOT_DRIVER_LIST_ENTRY BootDriver;
 
     NextBd = LoaderBlock->BootDriverListHead.Flink;
+    EndList = LoaderBlock->BootDriverListHead.Blink->Flink;
 
-    while (NextBd != &LoaderBlock->BootDriverListHead)
+    while (NextBd != EndList)
     {
         BootDriver = CONTAINING_RECORD(NextBd, BOOT_DRIVER_LIST_ENTRY, Link);
 
@@ -1551,12 +1687,13 @@ WinLdrpDumpBootDriver(PLOADER_PARAMETER_BLOCK LoaderBlock)
 VOID
 WinLdrpDumpArcDisks(PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
-    PLIST_ENTRY NextBd;
+    PLIST_ENTRY NextBd, EndList;
     PARC_DISK_SIGNATURE ArcDisk;
 
     NextBd = LoaderBlock->ArcDiskInformation->DiskSignatureListHead.Flink;
+    EndList = LoaderBlock->ArcDiskInformation->DiskSignatureListHead.Blink->Flink;
 
-    while (NextBd != &LoaderBlock->ArcDiskInformation->DiskSignatureListHead)
+    while (NextBd != EndList)
     {
         ArcDisk = CONTAINING_RECORD(NextBd, ARC_DISK_SIGNATURE, ListEntry);
 
