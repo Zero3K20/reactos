@@ -59,7 +59,7 @@ UDFExtentOffsetToLba(
         Extent++;
     }
     BOffset -= i;
-    Offs = (*((uint32*)&Offset)) - (i << BSh); // offset in frag
+    Offs = (uint32)Offset - (i << BSh); // offset in frag
 
     if (SectorOffset)
         (*SectorOffset) = Offs & (Vcb->SectorSize-1);// offset in 1st Lba

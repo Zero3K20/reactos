@@ -330,7 +330,7 @@ UDFReadWriteSectorsRaw(
 
                 if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->SessionEndLba + 1)) {
                     RtlZeroMemory(Buffer, FragLength);
-                    *((uint32*)&Buffer) += FragLength;
+                    Buffer = (PVOID)((PUCHAR)Buffer + FragLength);
                     continue;
                 }
 
@@ -356,7 +356,7 @@ UDFReadWriteSectorsRaw(
             }
 
             if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += FragLength;
+            Buffer = (PVOID)((PUCHAR)Buffer + FragLength);
         }
 
 try_exit: NOTHING;

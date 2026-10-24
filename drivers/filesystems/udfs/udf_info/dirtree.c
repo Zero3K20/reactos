@@ -364,8 +364,10 @@ UDFBuildHashEntry(
     )
 {
     UNICODE_STRING UName;
+    WCHAR UpcaseNameBuffer[UDF_NAME_LEN];
     WCHAR ShortNameBuffer[13];
     uint8 RetFlags = 0;
+    BOOLEAN FreeUpcaseName = FALSE;
 
     // An empty name has no hashes.  In particular, do not pass zero bytes to
     // FsRtlAllocatePoolWithTag and then free its result below.
@@ -383,11 +385,18 @@ UDFBuildHashEntry(
 
         UName.Length = 0;
         UName.MaximumLength = Name->Length;
-        UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
+        if (UName.MaximumLength <= sizeof(UpcaseNameBuffer)) {
+            UName.Buffer = UpcaseNameBuffer;
+        } else {
+            UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(
+                NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
+            FreeUpcaseName = TRUE;
+        }
 
         RtlUpcaseUnicodeString(&UName, Name, FALSE);
         hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
-        ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
+        if (FreeUpcaseName)
+            ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
     }
 
     if (Mask & HASH_DOS) {
@@ -1592,4 +1601,3 @@ UDFInsertLinkedFile(
     fi->PrevLinkedFile->NextLinkedFile = fi;
     return;
 } // end UDFInsertLinkedFile()
-
