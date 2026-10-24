@@ -19,31 +19,6 @@
 
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO_ALLOC
 
-static const int8 bit_count_tab[] = {
-    0, 1, 1, 2, 1, 2, 2, 3,   1, 2, 2, 3, 2, 3, 3, 4,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-
-    1, 2, 2, 3, 2, 3, 3, 4,   2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    2, 3, 3, 4, 3, 4, 4, 5,   3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    3, 4, 4, 5, 4, 5, 5, 6,   4, 5, 5, 6, 5, 6, 6, 7,
-    4, 5, 5, 6, 5, 6, 6, 7,   5, 6, 6, 7, 6, 7, 7, 8
-};
-
-/*
-    RtlFindNextForwardRunSet — not exported by ReactOS ntoskrnl,
-    but statically linked into MS udfs.sys. Same algorithm here.
-    Finds the next run of set (1) bits starting at or after FromIndex.
- */
 static
 ULONG
 UDFBitmapFindNextRunSet(
@@ -53,68 +28,30 @@ UDFBitmapFindNextRunSet(
     )
 {
     ULONG Size = BitMapHeader->SizeOfBitMap;
-    PULONG Buf = BitMapHeader->Buffer;
-    ULONG Idx = FromIndex;
+    ULONG Start, Low, High, Mid;
 
-    if (Size == 0) {
-        *StartingRunIndex = Idx;
-        return 0;
-    }
-
-    ULONG LastWord = (Size - 1) >> 5;
-
-    // Phase 1: skip clear bits, find first set bit
-    // Skip partial first word
-    ULONG Word = Idx >> 5;
-    if ((Idx & 31) && Word <= LastWord) {
-        // Mask off bits below Idx within this word
-        ULONG Val = Buf[Word] & ~((1UL << (Idx & 31)) - 1);
-        if (Val) {
-            // Found a set bit — count trailing zeros
-            Idx = (Word << 5);
-            while (!(Val & 1)) { Val >>= 1; Idx++; }
-            goto FoundStart;
-        }
-        Idx = (Word + 1) << 5;
-        Word++;
-    }
-    // Skip whole zero words
-    while (Word <= LastWord && Buf[Word] == 0) { Word++; Idx += 32; }
-    // Scan within the non-zero word
-    if (Word <= LastWord) {
-        ULONG Val = Buf[Word];
-        Idx = Word << 5;
-        while (!(Val & 1)) { Val >>= 1; Idx++; }
-    }
-
-FoundStart:
-    if (Idx >= Size) {
+    if (FromIndex >= Size) {
         *StartingRunIndex = Size;
         return 0;
     }
-    *StartingRunIndex = Idx;
 
-    // Phase 2: count consecutive set bits
-    ULONG End = Idx;
-    Word = End >> 5;
-    // Check partial first word
-    if ((End & 31) && Word <= LastWord) {
-        ULONG Val = Buf[Word] >> (End & 31);
-        while ((End & 31) && (Val & 1)) { Val >>= 1; End++; }
-        if (End & 31) goto Done;  // Run ended mid-word
-        Word++;
-    }
-    // Skip whole 0xFFFFFFFF words
-    while (Word <= LastWord && Buf[Word] == 0xFFFFFFFF) { Word++; End += 32; }
-    // Scan partial word at run end
-    if (Word <= LastWord) {
-        ULONG Val = Buf[Word];
-        while ((Val & 1)) { Val >>= 1; End++; }
+    Start = RtlFindSetBits(BitMapHeader, 1, FromIndex);
+    if (Start == MAXULONG || Start < FromIndex) {
+        *StartingRunIndex = Size;
+        return 0;
     }
 
-Done:
-    if (End > Size) End = Size;
-    return End - Idx;
+    *StartingRunIndex = Start;
+    Low = 1;
+    High = Size - Start;
+    while (Low <= High) {
+        Mid = Low + ((High - Low) >> 1);
+        if (RtlAreBitsSet(BitMapHeader, Start, Mid))
+            Low = Mid + 1;
+        else
+            High = Mid - 1;
+    }
+    return High;
 }
 
 /*
@@ -1063,49 +1000,31 @@ UDFGetBitmapLen(
     SIZE_T Lim          // NOT included
     )
 {
+    RTL_BITMAP BitMapHeader;
     ASSERT(Offs <= Lim);
     if (Offs >= Lim) {
         return 0;//(Offs == Lim);
     }
 
-    BOOLEAN bit = UDFGetBit(Bitmap, Offs);
-    SIZE_T i=Offs>>5;
-    SIZE_T len=0;
-    uint8 j=(uint8)(Offs&31);
-    uint8 lLim=(uint8)(Lim&31);
+    ULONG Low = 1;
+    ULONG High = (ULONG)(Lim - Offs);
+    ULONG Mid;
+    ULONG Length = 0;
+    BOOLEAN Bit;
 
-    Lim = Lim>>5;
-
-    ASSERT((bit == 0) || (bit == 1));
-
-    uint32 a;
-
-    a = Bitmap[i] >> j;
-
-    while(i<=Lim) {
-
-        while( j < ((i<Lim) ? 32 : lLim) ) {
-            if ( ((BOOLEAN)(a&1)) != bit)
-                return len;
-            len++;
-            a>>=1;
-            j++;
-        }
-        j=0;
-While_3:
-        i++;
-        if (i > Lim) break;
-        a = Bitmap[i];
-
-        if (i<Lim) {
-            if ((bit && (a==0xffffffff)) ||
-               (!bit && !a)) {
-                len+=32;
-                goto While_3;
-            }
+    RtlInitializeBitMap(&BitMapHeader, (PULONG)Bitmap, (ULONG)Lim);
+    Bit = RtlCheckBit(&BitMapHeader, (ULONG)Offs);
+    while (Low <= High) {
+        Mid = Low + ((High - Low) >> 1);
+        if (Bit ? RtlAreBitsSet(&BitMapHeader, (ULONG)Offs, Mid) :
+                  RtlAreBitsClear(&BitMapHeader, (ULONG)Offs, Mid)) {
+            Length = Mid;
+            Low = Mid + 1;
+        } else {
+            High = Mid - 1;
         }
     }
-    return len;
+    return Length;
 } // end UDFGetBitmapLen()
 
 /*
@@ -1413,6 +1332,7 @@ UDFMarkBadSpaceAsUsed(
     len = (lba+len+BIT_C-1)/BIT_C;
     if (Vcb->BSBM_Bitmap) {
         if (Vcb->BitmapFcb) {
+            RTL_BITMAP MaskBitmap;
             // Per-page: AND bad-block mask into pinned bitmap data
             for(j=lba/BIT_C; j<len; j++) {
                 if (Vcb->BSBM_Bitmap[j]) {
@@ -1420,7 +1340,9 @@ UDFMarkBadSpaceAsUsed(
                     ULONG byteOff = (j * BIT_C - Vcb->BitmapPageStartLbn) / 8;
                     // Access raw pinned data for bad-block masking
                     PUCHAR rawData = (PUCHAR)Vcb->BitmapRtl.Buffer;
-                    Vcb->FreeAllocUnits -= bit_count_tab[rawData[byteOff] & (UCHAR)Vcb->BSBM_Bitmap[j]];
+                    ULONG maskedBits = rawData[byteOff] & (UCHAR)Vcb->BSBM_Bitmap[j];
+                    RtlInitializeBitMap(&MaskBitmap, &maskedBits, BIT_C);
+                    Vcb->FreeAllocUnits -= RtlNumberOfSetBits(&MaskBitmap);
                     rawData[byteOff] &= ~Vcb->BSBM_Bitmap[j];
                     UDFDirtyBitmapPage(Vcb);
                 }
@@ -1867,11 +1789,10 @@ UDFGetPartFreeSpace(
         UDFUnpinBitmapPage(Vcb);
         UDFReleaseResource(&(Vcb->BitMapResource1));
     } else if (Vcb->FSBM_Bitmap) {
-        PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
-        ULONG lim = (Vcb->FSBM_BitCount+7)/8;
-        for(ULONG j=0; j<lim; j++) {
-            s+=bit_count_tab[cur[j]];
-        }
+        RTL_BITMAP Bitmap;
+
+        RtlInitializeBitMap(&Bitmap, (PULONG)Vcb->FSBM_Bitmap, Vcb->FSBM_BitCount);
+        s = RtlNumberOfSetBits(&Bitmap);
     } else {
         // Read-only optical media may have no free-space bitmap.
         // A missing bitmap cannot report allocatable blocks.

@@ -1471,39 +1471,88 @@ UDFDirIndex(
 
 #define CheckAddr(addr) {ASSERT((uint32)(addr) & 0x80000000);}
 
-#define UDFGetBit(arr, bit) (    (BOOLEAN) ( ((((uint32*)(arr))[(bit)>>5]) >> ((bit)&31)) &1 )    )
-#define UDFSetBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31)) )
-#define UDFClrBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31))) )
+static __inline BOOLEAN
+UDFGetBit(
+    IN PVOID Buffer,
+    IN ULONG Bit
+    )
+{
+    RTL_BITMAP Bitmap;
 
-#define UDFSetBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFSetBit(arr, (bit)+j); \
-}}
+    RtlInitializeBitMap(&Bitmap, (PULONG)Buffer, MAXULONG);
+    return RtlCheckBit(&Bitmap, Bit);
+}
 
-#define UDFClrBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFClrBit(arr, (bit)+j); \
-}}
+static __inline VOID
+UDFSetBit(
+    IN PVOID Buffer,
+    IN ULONG Bit
+    )
+{
+    RTL_BITMAP Bitmap;
 
-#define UDFGetUsedBit(arr,bit)      (!UDFGetBit(arr,bit))
-#define UDFGetFreeBit(arr,bit)      UDFGetBit(arr,bit)
-#define UDFSetUsedBit(arr,bit)      UDFClrBit(arr,bit)
-#define UDFSetFreeBit(arr,bit)      UDFSetBit(arr,bit)
-#define UDFSetUsedBits(arr,bit,bc)  UDFClrBits(arr,bit,bc)
-#define UDFSetFreeBits(arr,bit,bc)  UDFSetBits(arr,bit,bc)
+    RtlInitializeBitMap(&Bitmap, (PULONG)Buffer, MAXULONG);
+    RtlSetBits(&Bitmap, Bit, 1);
+}
 
-#define UDFGetBadBit(arr,bit)       UDFGetBit(arr,bit)
+static __inline VOID
+UDFClrBit(
+    IN PVOID Buffer,
+    IN ULONG Bit
+    )
+{
+    RTL_BITMAP Bitmap;
+
+    RtlInitializeBitMap(&Bitmap, (PULONG)Buffer, MAXULONG);
+    RtlClearBits(&Bitmap, Bit, 1);
+}
+
+static __inline VOID
+UDFSetBits(
+    IN PVOID Buffer,
+    IN ULONG Bit,
+    IN ULONG Count
+    )
+{
+    RTL_BITMAP Bitmap;
+
+    if (Count) {
+        RtlInitializeBitMap(&Bitmap, (PULONG)Buffer, MAXULONG);
+        RtlSetBits(&Bitmap, Bit, Count);
+    }
+}
+
+static __inline VOID
+UDFClrBits(
+    IN PVOID Buffer,
+    IN ULONG Bit,
+    IN ULONG Count
+    )
+{
+    RTL_BITMAP Bitmap;
+
+    if (Count) {
+        RtlInitializeBitMap(&Bitmap, (PULONG)Buffer, MAXULONG);
+        RtlClearBits(&Bitmap, Bit, Count);
+    }
+}
+
+static __inline BOOLEAN UDFGetUsedBit(PVOID Buffer, ULONG Bit) { return !UDFGetBit(Buffer, Bit); }
+static __inline BOOLEAN UDFGetFreeBit(PVOID Buffer, ULONG Bit) { return UDFGetBit(Buffer, Bit); }
+static __inline VOID UDFSetUsedBit(PVOID Buffer, ULONG Bit) { UDFClrBit(Buffer, Bit); }
+static __inline VOID UDFSetFreeBit(PVOID Buffer, ULONG Bit) { UDFSetBit(Buffer, Bit); }
+static __inline VOID UDFSetUsedBits(PVOID Buffer, ULONG Bit, ULONG Count) { UDFClrBits(Buffer, Bit, Count); }
+static __inline VOID UDFSetFreeBits(PVOID Buffer, ULONG Bit, ULONG Count) { UDFSetBits(Buffer, Bit, Count); }
+static __inline BOOLEAN UDFGetBadBit(PVOID Buffer, ULONG Bit) { return UDFGetBit(Buffer, Bit); }
 
 // Bitmap pin granularity: 8KB per page
 #define BITMAP_PIN_GRANULARITY  0x2000
 
-#define UDFGetZeroBit(arr,bit)      UDFGetBit(arr,bit)
-#define UDFSetZeroBit(arr,bit)      UDFSetBit(arr,bit)
-#define UDFClrZeroBit(arr,bit)      UDFClrBit(arr,bit)
-#define UDFSetZeroBits(arr,bit,bc)  UDFSetBits(arr,bit,bc)
-#define UDFClrZeroBits(arr,bit,bc)  UDFClrBits(arr,bit,bc)
+static __inline BOOLEAN UDFGetZeroBit(PVOID Buffer, ULONG Bit) { return UDFGetBit(Buffer, Bit); }
+static __inline VOID UDFSetZeroBit(PVOID Buffer, ULONG Bit) { UDFSetBit(Buffer, Bit); }
+static __inline VOID UDFClrZeroBit(PVOID Buffer, ULONG Bit) { UDFClrBit(Buffer, Bit); }
+static __inline VOID UDFSetZeroBits(PVOID Buffer, ULONG Bit, ULONG Count) { UDFSetBits(Buffer, Bit, Count); }
+static __inline VOID UDFClrZeroBits(PVOID Buffer, ULONG Bit, ULONG Count) { UDFClrBits(Buffer, Bit, Count); }
 
 #if defined UDF_DBG
   #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
