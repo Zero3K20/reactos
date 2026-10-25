@@ -49,6 +49,15 @@ add_library(udfs MODULE ${SOURCE} udffs.rc)
 
 target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 
+# Match GCC's default -O1 for UDFS non-Release MSVC builds only.
+if(MSVC AND OPTIMIZE STREQUAL "4")
+    target_compile_options(udfs PRIVATE
+        "$<$<NOT:$<CONFIG:Release>>:/O1>"
+        "$<$<NOT:$<CONFIG:Release>>:/Ob1>"
+        "$<$<NOT:$<CONFIG:Release>>:/RTC->"
+    )
+endif()
+
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)
     target_compile_options(udfs PRIVATE -Werror)
