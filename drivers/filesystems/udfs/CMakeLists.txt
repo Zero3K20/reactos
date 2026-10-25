@@ -51,10 +51,10 @@ target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 
 # Match GCC's default -O1 for UDFS non-Release MSVC builds only.
 if(MSVC AND OPTIMIZE STREQUAL "4")
+    set_property(TARGET udfs PROPERTY REACTOS_USE_GCC_OPTIMIZATION TRUE)
     target_compile_options(udfs PRIVATE
         "$<$<NOT:$<CONFIG:Release>>:/O1>"
         "$<$<NOT:$<CONFIG:Release>>:/Ob1>"
-        "$<$<NOT:$<CONFIG:Release>>:/RTC->"
     )
 endif()
 
