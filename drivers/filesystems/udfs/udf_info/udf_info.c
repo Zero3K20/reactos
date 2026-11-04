@@ -1275,22 +1275,27 @@ UDFAbandonDeletePrefreeDloc(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
 VOID
 UDFReleaseDeletePrefreeRecords(PVCB Vcb)
 {
-    PUDF_DELETE_PREFREE record, next;
+    PUDF_DELETE_PREFREE record, next, freeList;
     /* Mount can call VCB cleanup before the bitmap resource exists.  A
      * prefree record is created only after a successful writable mount. */
     if (!Vcb->DeletePrefreeList) return;
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
     record = Vcb->DeletePrefreeList;
+    freeList = record;
     Vcb->DeletePrefreeList = NULL;
     Vcb->DeletePrefreeCount = 0;
     while (record) {
-        next = record->Next;
         if (record->Dloc && record->Dloc->DeletePrefree == record)
             record->Dloc->DeletePrefree = NULL;
+        record = record->Next;
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    record = freeList;
+    while (record) {
+        next = record->Next;
         MyFreePool__(record);
         record = next;
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
 }
 
 static BOOLEAN
