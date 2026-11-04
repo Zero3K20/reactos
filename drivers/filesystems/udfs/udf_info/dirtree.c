@@ -1243,16 +1243,37 @@ UDFFindDloc(
     IN uint32 Lba
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
-    uint32 l;
+    PRTL_SPLAY_LINKS Links = Vcb->DlocTreeRoot;
+    PRTL_SPLAY_LINKS Last = NULL;
+    PRTL_SPLAY_LINKS Match = NULL;
+    ULONG MatchIndex = 0;
 
-    if (!(DlocList = Vcb->DlocList) || !Lba) return (-1);
-    // scan FE location cache
-    l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
-        if (DlocList->Lba == Lba)
-            return i;
+    if (!Links || !Lba)
+        return (-1);
+    while (Links) {
+        PUDF_DATALOC_INFO Dloc = CONTAINING_RECORD(
+            Links, UDF_DATALOC_INFO, DlocTreeLinks);
+        ULONG Index = Dloc->DlocIndex;
+        ULONG CurrentLba = Vcb->DlocList[Index].Lba;
+
+        if (Lba <= CurrentLba) {
+            if (Lba == CurrentLba) {
+                Match = Links;
+                MatchIndex = Index;
+            }
+            Last = Links;
+            Links = RtlLeftChild(Links);
+        } else {
+            Last = Links;
+            Links = RtlRightChild(Links);
+        }
     }
+    if (Match) {
+        Vcb->DlocTreeRoot = RtlSplay(Match);
+        return MatchIndex;
+    }
+    if (Last)
+        Vcb->DlocTreeRoot = RtlSplay(Last);
     return (-1);
 } // end UDFFindDloc()
 
@@ -1403,6 +1424,37 @@ UDFStoreDloc(
     Vcb->DlocList[i].Lba = Lba;
     Vcb->DlocList[i].Dloc = Dloc;
     RtlZeroMemory(Dloc, sizeof(UDF_DATALOC_INFO));
+    Dloc->DlocIndex = (ULONG)i;
+    RtlInitializeSplayLinks(&Dloc->DlocTreeLinks);
+    if (!Vcb->DlocTreeRoot) {
+        Vcb->DlocTreeRoot = &Dloc->DlocTreeLinks;
+    } else {
+        PRTL_SPLAY_LINKS Links = Vcb->DlocTreeRoot;
+
+        for (;;) {
+            PUDF_DATALOC_INFO Current = CONTAINING_RECORD(
+                Links, UDF_DATALOC_INFO, DlocTreeLinks);
+            ULONG CurrentLba = Vcb->DlocList[Current->DlocIndex].Lba;
+
+            if (Lba < CurrentLba ||
+                (Lba == CurrentLba && (ULONG)i < Current->DlocIndex)) {
+                if (RtlLeftChild(Links)) {
+                    Links = RtlLeftChild(Links);
+                } else {
+                    RtlInsertAsLeftChild(Links, &Dloc->DlocTreeLinks);
+                    break;
+                }
+            } else {
+                if (RtlRightChild(Links)) {
+                    Links = RtlRightChild(Links);
+                } else {
+                    RtlInsertAsRightChild(Links, &Dloc->DlocTreeLinks);
+                    break;
+                }
+            }
+        }
+        Vcb->DlocTreeRoot = RtlSplay(&Dloc->DlocTreeLinks);
+    }
     Vcb->DlocFreeHint = (ULONG)i + 1;
     Dloc->LinkedFileInfo = fi;
     UDFAcquireDloc(Vcb, Dloc);
@@ -1435,6 +1487,8 @@ UDFRemoveDloc(
     }
     // remove from cache
     ASSERT(Vcb->DlocList);
+    Vcb->DlocTreeRoot = RtlDelete(&Dloc->DlocTreeLinks);
+    RtlInitializeSplayLinks(&Dloc->DlocTreeLinks);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
@@ -1465,6 +1519,8 @@ UDFUnlinkDloc(
     }
     // remove from cache
     ASSERT(Vcb->DlocList);
+    Vcb->DlocTreeRoot = RtlDelete(&Dloc->DlocTreeLinks);
+    RtlInitializeSplayLinks(&Dloc->DlocTreeLinks);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
@@ -1490,6 +1546,8 @@ UDFFreeDloc(
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
         ASSERT(Vcb->DlocList);
+        Vcb->DlocTreeRoot = RtlDelete(&Dloc->DlocTreeLinks);
+        RtlInitializeSplayLinks(&Dloc->DlocTreeLinks);
         RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
         Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     }
@@ -1514,7 +1572,38 @@ UDFRelocateDloc(
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
         ASSERT(Vcb->DlocList);
+        Vcb->DlocTreeRoot = RtlDelete(&Dloc->DlocTreeLinks);
+        RtlInitializeSplayLinks(&Dloc->DlocTreeLinks);
         Vcb->DlocList[i].Lba = NewLba;
+        if (!Vcb->DlocTreeRoot) {
+            Vcb->DlocTreeRoot = &Dloc->DlocTreeLinks;
+        } else {
+            PRTL_SPLAY_LINKS Links = Vcb->DlocTreeRoot;
+
+            for (;;) {
+                PUDF_DATALOC_INFO Current = CONTAINING_RECORD(
+                    Links, UDF_DATALOC_INFO, DlocTreeLinks);
+                ULONG CurrentLba = Vcb->DlocList[Current->DlocIndex].Lba;
+
+                if (NewLba < CurrentLba ||
+                    (NewLba == CurrentLba && (ULONG)i < Current->DlocIndex)) {
+                    if (RtlLeftChild(Links)) {
+                        Links = RtlLeftChild(Links);
+                    } else {
+                        RtlInsertAsLeftChild(Links, &Dloc->DlocTreeLinks);
+                        break;
+                    }
+                } else {
+                    if (RtlRightChild(Links)) {
+                        Links = RtlRightChild(Links);
+                    } else {
+                        RtlInsertAsRightChild(Links, &Dloc->DlocTreeLinks);
+                        break;
+                    }
+                }
+            }
+            Vcb->DlocTreeRoot = RtlSplay(&Dloc->DlocTreeLinks);
+        }
     }
     UDFReleaseResource(&(Vcb->DlocResource));
 
@@ -1539,6 +1628,7 @@ UDFReleaseDlocList(
     MyFreePool__(Vcb->DlocList);
     Vcb->DlocList = NULL;
     Vcb->DlocCount = 0;
+    Vcb->DlocTreeRoot = NULL;
     Vcb->DlocFreeHint = 0;
     UDFReleaseResource(&(Vcb->DlocResource));
 } // end UDFReleaseDlocList()
@@ -1612,4 +1702,3 @@ UDFInsertLinkedFile(
     fi->PrevLinkedFile->NextLinkedFile = fi;
     return;
 } // end UDFInsertLinkedFile()
-

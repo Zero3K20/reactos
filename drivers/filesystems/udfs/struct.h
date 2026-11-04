@@ -867,6 +867,7 @@ struct VCB {
     // FE location cache
     PUDF_DATALOC_INDEX DlocList;
     ULONG           DlocCount;
+    PRTL_SPLAY_LINKS DlocTreeRoot;
     ULONG           DlocFreeHint; // all earlier slots are occupied
     // FS compatibility
     BOOLEAN         LowFreeSpace;
@@ -1244,4 +1245,3 @@ typedef struct _CDROM_TOC_LARGE {
 } CDROM_TOC_LARGE;
 
 #endif /* _UDF_STRUCTURES_H_ */ // has this file been included?
-
