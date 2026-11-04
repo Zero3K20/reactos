@@ -1529,4 +1529,15 @@ UDFCheckArea(
     IN uint32 BCount
     );
 
+NTSTATUS
+UDFCheckAreaEx(
+    PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN lba_t LBA,
+    IN uint32 BCount,
+    OUT PBOOLEAN AreaOk,
+    OUT PULONG BadLba,
+    OUT PULONG BadCount
+    );
+
 #endif // __UDF_STRUCT_SUPPORT_H__

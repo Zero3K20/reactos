@@ -28,39 +28,65 @@ UDFCheckArea(
     IN uint32 BCount
     )
 {
+    BOOLEAN AreaOk = FALSE;
+
+    return NT_SUCCESS(UDFCheckAreaEx(IrpContext, Vcb, LBA, BCount,
+                                     &AreaOk, NULL, NULL)) && AreaOk;
+} // end UDFCheckArea()
+
+NTSTATUS
+UDFCheckAreaEx(
+    PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN lba_t LBA,
+    IN uint32 BCount,
+    OUT PBOOLEAN AreaOk,
+    OUT PULONG BadLba,
+    OUT PULONG BadCount
+    )
+{
     uint8* buff;
-    NTSTATUS RC;
+    NTSTATUS status;
     uint32 i, d;
-    BOOLEAN ext_ok = TRUE;
-    EXTENT_MAP Map[2];
     uint32 PS = Vcb->SparingBlockSize ? Vcb->SparingBlockSize : 1;
 
-    buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, PS << Vcb->SectorShift, 'bNWD' );
-    if (buff) {
-        for(i=0; i<BCount; i+=d) {
-            if (!((LBA+i) & (PS-1)) &&
-               (i+PS <= BCount)) {
-                d = PS;
-            } else {
-                d = 1;
-            }
-            RC = UDFReadWriteSectors(IrpContext,
-                           Vcb,
-                           ((LONGLONG)(LBA + i)) << Vcb->SectorShift,
-                           d << Vcb->SectorShift,
-                           TRUE, buff, FALSE);
+    *AreaOk = FALSE;
+    if (BadLba)
+        *BadLba = 0;
+    if (BadCount)
+        *BadCount = 0;
 
-            if (RC != STATUS_SUCCESS) {
-                Map[0].extLocation = LBA+i;
-                Map[0].extLength = d << Vcb->SectorShift;
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(Map[0]), AS_DISCARDED | AS_BAD); // free
-                ext_ok = FALSE;
-            }
+    buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, PS << Vcb->SectorShift, 'bNWD' );
+    if (!buff)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    for(i=0; i<BCount; i+=d) {
+        if (!((LBA+i) & (PS-1)) &&
+           (i+PS <= BCount)) {
+            d = PS;
+        } else {
+            d = 1;
         }
-        DbgFreePool(buff);
+        status = UDFReadWriteSectors(IrpContext,
+                       Vcb,
+                       ((LONGLONG)(LBA + i)) << Vcb->SectorShift,
+                       d << Vcb->SectorShift,
+                       TRUE, buff, FALSE);
+
+        if (!NT_SUCCESS(status)) {
+            if (BadLba)
+                *BadLba = LBA + i;
+            if (BadCount)
+                *BadCount = d;
+            DbgFreePool(buff);
+            return STATUS_SUCCESS;
+        }
     }
-    return ext_ok;
-} // end UDFCheckArea()
+
+    DbgFreePool(buff);
+    *AreaOk = TRUE;
+    return STATUS_SUCCESS;
+}
 
 /*
     This routine remaps sectors from bad packet
@@ -319,4 +345,3 @@ UDFRelocateSectors(
     }
     return Extent;
 } // end UDFRelocateSectors()
-

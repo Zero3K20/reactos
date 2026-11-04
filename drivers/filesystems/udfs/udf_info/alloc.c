@@ -443,9 +443,7 @@ typedef struct _UDF_METADATA_GROWTH_PROFILE {
 } UDF_METADATA_GROWTH_PROFILE;
 
 /* Search free runs once instead of allocating and rolling back each
-   overlapping alignment window on a large physical partition.  Keep the
-   bitmap lock across discovery and reservation so the selected run cannot
-   be taken by another allocation. */
+   overlapping alignment window on a large physical partition. */
 static NTSTATUS
 UDFAllocAlignedMetadataRun(
     IN PIRP_CONTEXT IrpContext,
@@ -462,6 +460,7 @@ UDFAllocAlignedMetadataRun(
     uint32 searchStart, runStart, runLength, candidate, remainder;
     NTSTATUS status = STATUS_DISK_FULL;
     LARGE_INTEGER phaseStart;
+    BOOLEAN bitmapLocked = FALSE;
 
     ExtInfo->Mapping = NULL;
     ExtInfo->Length = 0;
@@ -469,9 +468,10 @@ UDFAllocAlignedMetadataRun(
     if (PhysEnd <= PhysStart || Blocks > PhysEnd - PhysStart)
         return status;
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
     searchStart = PhysStart;
     while (searchStart <= PhysEnd - Blocks) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+        bitmapLocked = TRUE;
         phaseStart = KeQueryPerformanceCounter(NULL);
         runStart = (uint32)UDFFindMinSuitableExtent(Vcb, Blocks,
                       searchStart, PhysEnd, &runLength,
@@ -496,6 +496,10 @@ UDFAllocAlignedMetadataRun(
         }
         if (remainder)
             candidate += Align - remainder;
+        /* UDFAllocFreeExtent reserves the range under the bitmap lock, then
+         * performs verification and zeroing without it. */
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        bitmapLocked = FALSE;
         phaseStart = KeQueryPerformanceCounter(NULL);
         status = UDFAllocFreeExtent(IrpContext, Vcb,
                      ((int64)Blocks) << Vcb->SectorShift,
@@ -517,7 +521,8 @@ UDFAllocAlignedMetadataRun(
             break;
         searchStart = runStart + runLength;
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
+    if (bitmapLocked)
+        UDFReleaseResource(&(Vcb->BitMapResource1));
     return status;
 }
 
@@ -1830,6 +1835,40 @@ UDFMarkSpaceAsXXX_(
 
 } // end UDFMarkSpaceAsXXX_()
 
+static NTSTATUS
+UDFZeroAllocatedExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PEXTENT_MAP Mapping,
+    IN PCHAR ZeroBuffer,
+    IN SIZE_T ZeroBufferLength
+    )
+{
+    uint32 i;
+
+    for (i = 0; Mapping[i].extLength & UDF_EXTENT_LENGTH_MASK; i++) {
+        uint32 length = Mapping[i].extLength & UDF_EXTENT_LENGTH_MASK;
+        uint64 offset = ((uint64)Mapping[i].extLocation) << Vcb->SectorShift;
+
+        while (length) {
+            SIZE_T chunk = min((SIZE_T)length, ZeroBufferLength);
+            SIZE_T written;
+            NTSTATUS status = UDFWriteData(IrpContext, Vcb, TRUE,
+                                           offset, chunk, TRUE, ZeroBuffer,
+                                           &written);
+            if (!NT_SUCCESS(status))
+                return status;
+            if (written != chunk)
+                return STATUS_DEVICE_DATA_ERROR;
+
+            offset += chunk;
+            length -= (uint32)chunk;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
 /*
     This routine builds mapping for Length bytes in FreeSpace
     It should be used when IN_ICB method is unavailable.
@@ -1851,8 +1890,16 @@ UDFAllocFreeExtent_(
 {
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
-    uint32 len, LBS, BSh, blen;
-    uint32 dataHint;
+    PEXTENT_MAP NewMap;
+    PCHAR ZeroBuffer;
+    SIZE_T MappingLength, CandidateLength;
+    uint32 len, LBS, BSh, blen, allocLen;
+    uint32 dataHint = 0;
+    SIZE_T ZeroBufferLength;
+    BOOLEAN hintSaved = FALSE, areaOk;
+    ULONG badLba, badCount, badLbn;
+    EXTENT_MAP BadMap[2];
+    NTSTATUS status;
     BOOLEAN feLocality = (AllocFlags & EXTENT_FLAG_FE_LOCALITY) != 0;
 
     if (Vcb->MetadataFileInfo &&
@@ -1866,36 +1913,37 @@ UDFAllocFreeExtent_(
     blen = (uint32)(((Length+LBS-1) & ~((int64)LBS-1)) >> BSh);
     ExtInfo->Mapping = NULL;
     ExtInfo->Offset = 0;
+    ExtInfo->Length = 0;
 
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
-    dataHint = Vcb->SectorHint;
-    /* A normal data allocation must resume from its old cursor after a
-     * separately placed FE. The bitmap lock covers both cursors and mark. */
     ASSERT(!feLocality || (Length > 0 && Length <= LBS && blen == 1));
 
+    ZeroBufferLength = max((SIZE_T)PAGE_SIZE, (SIZE_T)LBS);
+    ZeroBuffer = (PCHAR)MyAllocatePool__(NonPagedPool, ZeroBufferLength);
+    if (!ZeroBuffer)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(ZeroBuffer, ZeroBufferLength);
+
     if (blen > (SearchLim - SearchStart)) {
-        goto no_free_space_err;
+        status = STATUS_DISK_FULL;
+        goto failed;
     }
-    // walk through the free space bitmap & find a single extent or a set of
-    // frags giving in sum the Length specified
+
+    /* Reserve each candidate while holding the bitmap lock, then do I/O
+     * without it. A reservation is visible as allocated until committed or
+     * rolled back, so concurrent allocators cannot select the same blocks. */
     while(blen) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+        if (!hintSaved) {
+            dataHint = Vcb->SectorHint;
+            hintSaved = TRUE;
+        }
+
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
                                                                SearchLim, &len, AllocFlags);
 
-        if (len >= blen) {
-            // complete search
-            Ext.extLength = blen<<BSh;
-            blen = 0;
-        } else if (len) {
-            // we need still some frags to complete request &
-            // probably we have the opportunity to do it
-            Ext.extLength = len<<BSh;
-            blen -= len;
-        } else {
-no_free_space_err:
-            // no more free space. abort
+        if (!len) {
             /* The preferred FE quarter can become full on a writable
              * volume. Do not rescan and log that entire range for every
              * later create; ordinary full-range allocation still runs. */
@@ -1904,77 +1952,133 @@ no_free_space_err:
             if (!feLocality)
                 UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
                     blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
-            if (ExtInfo->Mapping) {
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                MyFreePool__(ExtInfo->Mapping);
-                ExtInfo->Mapping = NULL;
-            }
             UDFReleaseResource(&(Vcb->BitMapResource1));
-            ExtInfo->Length = 0;//UDFGetExtentLength(ExtInfo->Mapping);
             if (!feLocality)
                 AdPrint(("  DISK_FULL\n"));
-            return STATUS_DISK_FULL;
+            status = STATUS_DISK_FULL;
+            goto failed;
         }
-        // append the frag found to mapping
+
+        allocLen = min(len, blen);
+        Ext.extLength = allocLen << BSh;
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
+        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
+#ifdef UDF_TRACK_ALLOC_FREE_EXTENT
+        Map = UDFExtentToMapping_(&Ext, src, line);
+#else // UDF_TRACK_ALLOC_FREE_EXTENT
+        Map = UDFExtentToMapping(&Ext);
+#endif // UDF_TRACK_ALLOC_FREE_EXTENT
+        if (!Map) {
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto failed;
+        }
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED);
+        if (feLocality) {
+            uint32 next = Ext.extLocation - Vcb->Partitions[0].PartitionRoot + allocLen;
+            Vcb->FeSectorHint = next < SearchLim - Vcb->Partitions[0].PartitionRoot ?
+                                next : SearchStart - Vcb->Partitions[0].PartitionRoot;
+            Vcb->SectorHint = dataHint;
+        }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        blen -= allocLen;
+
         if ((Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK) &&
             (AllocFlags & EXTENT_FLAG_VERIFY)) {
-            if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
+            status = UDFCheckAreaEx(IrpContext, Vcb, Ext.extLocation,
+                                    allocLen, &areaOk, &badLba, &badCount);
+            if (!NT_SUCCESS(status))
+                goto failed;
+            if (!areaOk) {
                 AdPrint(("newly allocated extent contains BB\n"));
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
-                // roll back
-                blen += Ext.extLength>>BSh;
+                if (badLba < Vcb->Partitions[0].PartitionRoot ||
+                    badLba < Ext.extLocation ||
+                    !badCount || badCount > allocLen ||
+                    badLba - Ext.extLocation > allocLen - badCount) {
+                    status = STATUS_FILE_CORRUPT_ERROR;
+                    goto failed;
+                }
+                badLbn = badLba - Vcb->Partitions[0].PartitionRoot;
+                if (badLbn >= Vcb->FSBM_BitCount ||
+                    badCount > Vcb->FSBM_BitCount - badLbn) {
+                    status = STATUS_FILE_CORRUPT_ERROR;
+                    goto failed;
+                }
+                UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+                if (Vcb->BSBM_Bitmap)
+                    UDFSetBits(Vcb->BSBM_Bitmap, badLbn, badCount);
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_DISCARDED);
+                BadMap[0].extLocation = badLba;
+                BadMap[0].extLength = (badCount << BSh) |
+                                      (EXTENT_NOT_RECORDED_ALLOCATED << 30);
+                BadMap[1].extLocation = 0;
+                BadMap[1].extLength = 0;
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, BadMap, AS_USED);
+                UDFReleaseResource(&(Vcb->BitMapResource1));
+                MyFreePool__(Map);
+                Map = NULL;
+                blen += allocLen;
                 continue;
             }
         }
 
-        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
-        if (!(ExtInfo->Mapping)) {
-            // create new
-#ifdef UDF_TRACK_ALLOC_FREE_EXTENT
-            ExtInfo->Mapping = UDFExtentToMapping_(&Ext, src, line);
-#else // UDF_TRACK_ALLOC_FREE_EXTENT
-            ExtInfo->Mapping = UDFExtentToMapping(&Ext);
-#endif // UDF_TRACK_ALLOC_FREE_EXTENT
-            if (!ExtInfo->Mapping) {
-                BrutePoint();
-                UDFReleaseResource(&(Vcb->BitMapResource1));
-                ExtInfo->Length = 0;
-                return STATUS_INSUFFICIENT_RESOURCES;
-            }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED); // used
-            if (feLocality) {
-                uint32 next = Ext.extLocation - Vcb->Partitions[0].PartitionRoot + 1;
-                Vcb->FeSectorHint = next < SearchLim - Vcb->Partitions[0].PartitionRoot ?
-                                    next : SearchStart - Vcb->Partitions[0].PartitionRoot;
-                Vcb->SectorHint = dataHint;
-            }
-        } else {
-            // update existing
-            Map = UDFExtentToMapping(&Ext);
-            if (!Map) {
-                BrutePoint();
-                UDFReleaseResource(&(Vcb->BitMapResource1));
-                ExtInfo->Length = UDFGetExtentLength(ExtInfo->Mapping);
-                return STATUS_INSUFFICIENT_RESOURCES;
-            }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED); // used
-            ExtInfo->Mapping = UDFMergeMappings(ExtInfo->Mapping, Map);
-            MyFreePool__(Map);
-        }
+        status = UDFZeroAllocatedExtent(IrpContext, Vcb, Map,
+                                        ZeroBuffer, ZeroBufferLength);
+        if (!NT_SUCCESS(status))
+            goto failed;
+
         if (!ExtInfo->Mapping) {
-            BrutePoint();
-            UDFReleaseResource(&(Vcb->BitMapResource1));
-            ExtInfo->Length = 0;
-            return STATUS_INSUFFICIENT_RESOURCES;
+            ExtInfo->Mapping = Map;
+            Map = NULL;
+        } else {
+            MappingLength = UDFGetMappingLength(ExtInfo->Mapping);
+            CandidateLength = UDFGetMappingLength(Map);
+            if (MappingLength < sizeof(EXTENT_MAP) ||
+                CandidateLength < sizeof(EXTENT_MAP) ||
+                MappingLength - sizeof(EXTENT_MAP) >
+                    MAXULONG - CandidateLength) {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto failed;
+            }
+            NewMap = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool,
+                        MappingLength + CandidateLength - sizeof(EXTENT_MAP));
+            if (!NewMap) {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto failed;
+            }
+            RtlCopyMemory(NewMap, ExtInfo->Mapping,
+                          MappingLength - sizeof(EXTENT_MAP));
+            RtlCopyMemory((PUCHAR)NewMap + MappingLength -
+                          sizeof(EXTENT_MAP), Map, CandidateLength);
+            MyFreePool__(ExtInfo->Mapping);
+            ExtInfo->Mapping = NewMap;
+            MyFreePool__(Map);
+            Map = NULL;
         }
     }
-    UDFReleaseResource(&(Vcb->BitMapResource1));
+
     ExtInfo->Length = Length;
+    MyFreePool__(ZeroBuffer);
     return STATUS_SUCCESS;
+
+failed:
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    if (Map)
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_DISCARDED);
+    if (ExtInfo->Mapping)
+        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED);
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    if (Map)
+        MyFreePool__(Map);
+    if (ExtInfo->Mapping) {
+        MyFreePool__(ExtInfo->Mapping);
+        ExtInfo->Mapping = NULL;
+    }
+    ExtInfo->Length = 0;
+    MyFreePool__(ZeroBuffer);
+    return status;
 } // end UDFAllocFreeExtent_()
 
 /*
