@@ -457,6 +457,7 @@ typedef struct _EXT_RELOCATION_ENTRY {
 typedef struct _UDF_DATALOC_INDEX {
     uint32 Lba;
     PUDF_DATALOC_INFO Dloc;
+    ULONG HashNext;
 } UDF_DATALOC_INDEX, *PUDF_DATALOC_INDEX;
 
 typedef struct _UDF_DIR_SCAN_CONTEXT {
