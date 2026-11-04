@@ -29,7 +29,8 @@ UDFAutoUnlock (
 /* Called under this directory's FCB resource. An indexed, referenced FCB
  * and its Dloc retain the unpublished append generation. Final teardown
  * drains it before removing the FCB/LCB; an explicit flush drains before FE.
- * Ordinary file cleanup and all error/write-through boundaries stay eager.
+ * Regular-file metadata and all error/write-through boundaries stay eager;
+ * only eligible cached directory appends may be deferred.
  * Directory FileObjects do not carry FO_CACHE_SUPPORTED (create.c); the
  * pending generation was already admitted by a cached child cleanup. */
 static BOOLEAN
@@ -672,11 +673,9 @@ delete_attempt_done:
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
                 UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
                 /* A regular file's new FID may only be in its parent's
-                 * append buffer. Flush the parent so the name reaches the
-                 * disk together with the file entry flushed above. Only a
-                 * directory's own cleanup may keep its parent deferred. */
+                 * append buffer. Keep it resident only when the parent passes
+                 * the cached-append cleanup guards; otherwise commit it now. */
                 BOOLEAN DeferAppend =
-                    FlagOn(Fcb->FcbState, UDF_FCB_DIRECTORY) &&
                     FlagOn(FileObject->Flags, FO_CACHE_SUPPORTED) &&
                     UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject);
                 if (!DeferAppend) {
