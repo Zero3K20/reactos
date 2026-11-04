@@ -1164,49 +1164,47 @@ UDFGetBitmapLen(
     SIZE_T Lim          // NOT included
     )
 {
+    BOOLEAN bit;
+    SIZE_T i;
+
     ASSERT(Offs <= Lim);
     if (Offs >= Lim) {
         return 0;//(Offs == Lim);
     }
 
-    BOOLEAN bit = UDFGetBit(Bitmap, Offs);
-    SIZE_T i=Offs>>5;
-    SIZE_T len=0;
-    uint8 j=(uint8)(Offs&31);
-    uint8 lLim=(uint8)(Lim&31);
-
-    Lim = Lim>>5;
-
+    bit = UDFGetBit(Bitmap, Offs);
     ASSERT((bit == 0) || (bit == 1));
 
-    uint32 a;
+    for (i = Offs; i < Lim;) {
+        SIZE_T bitIndex = i & 31;
+        SIZE_T bitsToCheck = Lim - i;
+        uint32 word;
+        uint32 mismatch;
+        uint32 mask;
 
-    a = Bitmap[i] >> j;
-
-    while(i<=Lim) {
-
-        while( j < ((i<Lim) ? 32 : lLim) ) {
-            if ( ((BOOLEAN)(a&1)) != bit)
-                return len;
-            len++;
-            a>>=1;
-            j++;
+        if (bitsToCheck > 32 - bitIndex) {
+            bitsToCheck = 32 - bitIndex;
         }
-        j=0;
-While_3:
-        i++;
-        if (i > Lim) break;
-        a = Bitmap[i];
 
-        if (i<Lim) {
-            if ((bit && (a==0xffffffff)) ||
-               (!bit && !a)) {
-                len+=32;
-                goto While_3;
+        word = Bitmap[i >> 5] >> bitIndex;
+        mismatch = bit ? ~word : word;
+        mask = (bitsToCheck == 32) ?
+            0xffffffff : (((uint32)1 << bitsToCheck) - 1);
+        mismatch &= mask;
+
+        if (mismatch) {
+            ULONG firstMismatch = 0;
+
+            while (!(mismatch & 1)) {
+                mismatch >>= 1;
+                firstMismatch++;
             }
+            return (i - Offs) + firstMismatch;
         }
+
+        i += bitsToCheck;
     }
-    return len;
+    return Lim - Offs;
 } // end UDFGetBitmapLen()
 
 /*
