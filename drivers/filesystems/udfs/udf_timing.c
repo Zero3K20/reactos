@@ -12,6 +12,26 @@ DbgPrint(
     ...
     );
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+static
+PETHREAD
+UdfFunctionTimingCurrentThread(VOID)
+{
+#if defined(_MSC_VER) && defined(_M_IX86)
+    /* Avoid the instrumented current-thread wrappers in MSVC builds. */
+    return (PETHREAD)__readfsdword(0x124);
+#elif defined(_MSC_VER) && defined(_M_AMD64)
+    return (PETHREAD)__readgsqword(0x188);
+#elif defined(_MSC_VER)
+    return (PETHREAD)KeGetCurrentThread();
+#else
+    return PsGetCurrentThread();
+#endif
+}
+
 typedef struct _UDF_FUNCTION_TIMING_FRAME {
     PVOID Function;
     LARGE_INTEGER Start;
@@ -37,7 +57,7 @@ UdfFunctionTimingEnter(
     LARGE_INTEGER Frequency
     )
 {
-    PETHREAD Thread = PsGetCurrentThread();
+    PETHREAD Thread = UdfFunctionTimingCurrentThread();
     KIRQL OldIrql;
     ULONG i;
     UDF_FUNCTION_TIMING_THREAD *TimingThread = NULL;
@@ -87,7 +107,7 @@ UdfFunctionTimingExit(
     UDF_FUNCTION_TIMING_FRAME *Frame
     )
 {
-    PETHREAD Thread = PsGetCurrentThread();
+    PETHREAD Thread = UdfFunctionTimingCurrentThread();
     KIRQL OldIrql;
     ULONG i;
     UDF_FUNCTION_TIMING_THREAD *TimingThread = NULL;
@@ -135,9 +155,7 @@ UdfFunctionTimingPrint(
     DbgPrint("UDF timing: %p took %I64u us\n", Frame->Function, ElapsedUs);
 }
 
-#if defined(_MSC_VER)
-
-#include <intrin.h>
+#if defined(_MSC_VER) && !defined(__clang__)
 
 void __cdecl _penter(void)
 {
