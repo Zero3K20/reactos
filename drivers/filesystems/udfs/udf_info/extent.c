@@ -2997,13 +2997,8 @@ UDFGetZeroLength(
     IN uint32 Length
     )
 {
-    uint32 i;
-    Length /= sizeof(uint32);
-    for(i=0; i<Length; i++) {
-        if ( ((uint32*)Buffer)[i] )
-            break;
-    }
-    return Length*sizeof(uint32);
+    UNREFERENCED_PARAMETER(Buffer);
+    return Length & ~(sizeof(uint32) - 1);
 }
 
 #ifdef _MSC_VER
