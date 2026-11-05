@@ -37,6 +37,7 @@ list(APPEND SOURCE
     shutdown.c
     sys_spec.c
     udf_dbg.c
+    udf_timing.c
     udfinit.c
     unload.c
     verfysup.c
@@ -55,9 +56,22 @@ target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 if(UDFS_FUNCTION_TIMING)
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
         target_compile_definitions(udfs PRIVATE UDF_FUNCTION_TIMING)
-        target_compile_options(udfs PRIVATE -finstrument-functions)
+        foreach(SOURCE_FILE ${SOURCE})
+            if(SOURCE_FILE MATCHES "\\.c$" AND NOT SOURCE_FILE STREQUAL "udf_timing.c")
+                set_source_files_properties(${SOURCE_FILE} PROPERTIES
+                    COMPILE_OPTIONS -finstrument-functions)
+            endif()
+        endforeach()
+    elseif(MSVC)
+        target_compile_definitions(udfs PRIVATE UDF_FUNCTION_TIMING)
+        foreach(SOURCE_FILE ${SOURCE})
+            if(SOURCE_FILE MATCHES "\\.c$" AND NOT SOURCE_FILE STREQUAL "udf_timing.c")
+                set_source_files_properties(${SOURCE_FILE} PROPERTIES
+                    COMPILE_OPTIONS "/Gh;/GH")
+            endif()
+        endforeach()
     else()
-        message(FATAL_ERROR "UDFS_FUNCTION_TIMING requires GCC or Clang")
+        message(FATAL_ERROR "UDFS_FUNCTION_TIMING requires GCC, Clang, or MSVC")
     endif()
 endif()
 
