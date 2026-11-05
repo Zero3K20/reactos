@@ -1170,6 +1170,7 @@ UDFFindPathPrefix(
         // acquire child exclusive, then release parent.
         CurrentLcb = MatchLcb;
         *RemainingName = LocalRemainingName;
+        RemainingName->Buffer = &RemainingName->Buffer[RemainingOffset];
 
         PFCB ChildFcb = MatchLcb->ChildFcb;
 
