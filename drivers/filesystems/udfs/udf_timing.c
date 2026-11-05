@@ -45,8 +45,7 @@ typedef struct _UDF_FUNCTION_TIMING_THREAD {
     UDF_FUNCTION_TIMING_FRAME Frames[UDF_TIMING_MAX_DEPTH];
 } UDF_FUNCTION_TIMING_THREAD;
 
-static KSPIN_LOCK UdfFunctionTimingLock;
-static volatile LONG UdfFunctionTimingInitialization;
+static KSPIN_LOCK UdfFunctionTimingLock = 0;
 static UDF_FUNCTION_TIMING_THREAD UdfFunctionTimingThreads[UDF_TIMING_THREAD_COUNT];
 
 static
@@ -61,15 +60,6 @@ UdfFunctionTimingEnter(
     KIRQL OldIrql;
     ULONG i;
     UDF_FUNCTION_TIMING_THREAD *TimingThread = NULL;
-
-    if (InterlockedCompareExchange(&UdfFunctionTimingInitialization, 1, 0) == 0) {
-        KeInitializeSpinLock(&UdfFunctionTimingLock);
-        InterlockedExchange(&UdfFunctionTimingInitialization, 2);
-    } else {
-        while (InterlockedCompareExchange(&UdfFunctionTimingInitialization, 2, 2) != 2) {
-            YieldProcessor();
-        }
-    }
 
     KeAcquireSpinLock(&UdfFunctionTimingLock, &OldIrql);
     for (i = 0; i < UDF_TIMING_THREAD_COUNT; i++) {
@@ -112,9 +102,6 @@ UdfFunctionTimingExit(
     ULONG i;
     UDF_FUNCTION_TIMING_THREAD *TimingThread = NULL;
     BOOLEAN FrameFound = FALSE;
-
-    if (InterlockedCompareExchange(&UdfFunctionTimingInitialization, 2, 2) != 2)
-        return FALSE;
 
     KeAcquireSpinLock(&UdfFunctionTimingLock, &OldIrql);
     for (i = 0; i < UDF_TIMING_THREAD_COUNT; i++) {
