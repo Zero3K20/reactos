@@ -46,7 +46,6 @@ UDFDirIndexAlloc(
 {
     uint_di j,k;
     PDIR_INDEX_HDR hDirNdx;
-    PDIR_INDEX_ITEM* FrameList;
 
     if (!i)
         return NULL;
@@ -58,27 +57,27 @@ UDFDirIndexAlloc(
     if (!hDirNdx) return NULL;
     RtlZeroMemory(hDirNdx, sizeof(DIR_INDEX_HDR));
 
-    FrameList = (PDIR_INDEX_ITEM*)(hDirNdx+1);
-    for(k=0; k<j; k++, FrameList++) {
-        (*FrameList) = (PDIR_INDEX_ITEM)MyAllocatePoolTag__(UDF_DIR_INDEX_MT, UDF_DIR_INDEX_FRAME*sizeof(DIR_INDEX_ITEM), MEM_DIR_NDX_TAG);
-        if (!(*FrameList)) {
+    PDIR_INDEX_ITEM* FrameList = (PDIR_INDEX_ITEM*)(hDirNdx+1);
+    for(k=0; k<j; k++) {
+        FrameList[k] = (PDIR_INDEX_ITEM)MyAllocatePoolTag__(
+            UDF_DIR_INDEX_MT, UDF_DIR_INDEX_FRAME * sizeof(DIR_INDEX_ITEM), MEM_DIR_NDX_TAG);
+        if (!FrameList[k]) {
 free_hdi:
-            // item pointet by FrameList is NULL, it could not be allocated
             while(k) {
                 k--;
-                FrameList--;
-                MyFreePool__(*FrameList);
+                MyFreePool__(FrameList[k]);
             }
             MyFreePool__(hDirNdx);
             return NULL;
         }
-        RtlZeroMemory((*FrameList), UDF_DIR_INDEX_FRAME*sizeof(DIR_INDEX_ITEM));
+        RtlZeroMemory(FrameList[k], UDF_DIR_INDEX_FRAME*sizeof(DIR_INDEX_ITEM));
     }
     if (i) {
-        (*FrameList) = (PDIR_INDEX_ITEM)MyAllocatePoolTag__(UDF_DIR_INDEX_MT, AlignDirIndex(i)*sizeof(DIR_INDEX_ITEM), MEM_DIR_NDX_TAG);
-        if (!(*FrameList))
+        FrameList[j] = (PDIR_INDEX_ITEM)MyAllocatePoolTag__(
+            UDF_DIR_INDEX_MT, AlignDirIndex(i) * sizeof(DIR_INDEX_ITEM), MEM_DIR_NDX_TAG);
+        if (!FrameList[j])
             goto free_hdi;
-        RtlZeroMemory((*FrameList), i*sizeof(DIR_INDEX_ITEM));
+        RtlZeroMemory(FrameList[j], i*sizeof(DIR_INDEX_ITEM));
     }
 
     hDirNdx->FrameCount = j+(i!=0);
@@ -96,12 +95,10 @@ UDFDirIndexFree(
     )
 {
     uint32 k;
-    PDIR_INDEX_ITEM* FrameList;
-
-    FrameList = (PDIR_INDEX_ITEM*)(hDirNdx+1);
+    PDIR_INDEX_ITEM* FrameList = (PDIR_INDEX_ITEM*)(hDirNdx+1);
     if (!hDirNdx) return;
-    for(k=0; k<hDirNdx->FrameCount; k++, FrameList++) {
-        if (*FrameList) MyFreePool__(*FrameList);
+    for(k=0; k<hDirNdx->FrameCount; k++) {
+        if (FrameList[k]) MyFreePool__(FrameList[k]);
     }
     MyFreePool__(hDirNdx);
 } // UDFDirIndexFree();
@@ -299,7 +296,6 @@ UDFDirIndexInitScan(
                                           Context->j);
     Context->i--;
     Context->j--;
-    Context->DirNdx--;
 
     return TRUE;
 } // end UDFDirIndexInitScan()
@@ -315,7 +311,6 @@ UDFDirIndexScan(
 
     Context->i++;
     Context->j++;
-    Context->DirNdx++;
 
     if (Context->j >= Context->d) {
         Context->j=0;
@@ -324,6 +319,12 @@ UDFDirIndexScan(
                                               Context->frame,
                                               &(Context->d),
                                               &(Context->i),
+                                              Context->j);
+    } else {
+        Context->DirNdx = UDFDirIndexGetFrame(Context->hDirNdx,
+                                              Context->frame,
+                                              NULL,
+                                              NULL,
                                               Context->j);
     }
     if (!Context->DirNdx) {
@@ -1243,14 +1244,13 @@ UDFFindDloc(
     IN uint32 Lba
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
     uint32 l;
 
-    if (!(DlocList = Vcb->DlocList) || !Lba) return (-1);
+    if (!Vcb->DlocList || !Lba) return (-1);
     // scan FE location cache
     l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
-        if (DlocList->Lba == Lba)
+    for(uint32 i=0; i<l; i++) {
+        if (Vcb->DlocList[i].Lba == Lba)
             return i;
     }
     return (-1);
@@ -1265,14 +1265,13 @@ UDFFindDlocInMem(
     IN PUDF_DATALOC_INFO Dloc
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
     uint32 l;
 
-    if (!(DlocList = Vcb->DlocList) || !Dloc) return (-1);
+    if (!Vcb->DlocList || !Dloc) return (-1);
     // scan FE location cache
     l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
-        if (DlocList->Dloc == Dloc)
+    for(uint32 i=0; i<l; i++) {
+        if (Vcb->DlocList[i].Dloc == Dloc)
             return i;
     }
     return (-1);
@@ -1287,7 +1286,6 @@ UDFFindFreeDloc(
     IN uint32 Lba
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
     uint32 l;
 
     if (!Vcb->DlocList) {
@@ -1304,9 +1302,8 @@ UDFFindFreeDloc(
      * leave this same free slot available for the next request. */
     l = Vcb->DlocCount;
     uint32 first = Vcb->DlocFreeHint <= l ? Vcb->DlocFreeHint : 0;
-    DlocList = Vcb->DlocList + first;
-    for(uint32 i=first; i<l; i++, DlocList++) {
-        if (!DlocList->Dloc)
+    for(uint32 i=first; i<l; i++) {
+        if (!Vcb->DlocList[i].Dloc)
             return i;
     }
     // alloc some free entries
@@ -1612,4 +1609,3 @@ UDFInsertLinkedFile(
     fi->PrevLinkedFile->NextLinkedFile = fi;
     return;
 } // end UDFInsertLinkedFile()
-

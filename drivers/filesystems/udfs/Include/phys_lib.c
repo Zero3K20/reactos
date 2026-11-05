@@ -199,20 +199,22 @@ UDFSendSectorIo(
     IN BOOLEAN IsWrite
     )
 {
-    PCHAR BufPtr = Buffer;
+    PCHAR BufferBase = Buffer;
+    SIZE_T BufferOffset = 0;
     ULONG ChunkLen = 0;
     NTSTATUS Status = STATUS_SUCCESS;
 
     while (ByteCount > 0) {
         ChunkLen = min(ByteCount, UDF_MAX_SECTOR_IO_BYTES);
-        Status = UDFSendSectorIoChunk(IrpContext, TargetDeviceObject, BufPtr, ChunkLen, Offset, IsWrite);
+        Status = UDFSendSectorIoChunk(IrpContext, TargetDeviceObject,
+                                      &BufferBase[BufferOffset], ChunkLen, Offset, IsWrite);
         
         if (!NT_SUCCESS(Status)) {
 
             return Status;
         }
         
-        BufPtr += ChunkLen;
+        BufferOffset += ChunkLen;
         Offset += ChunkLen;
         ByteCount -= ChunkLen;
     }
@@ -248,6 +250,9 @@ UDFReadWriteSectorsRaw(
     NTSTATUS RC = STATUS_SUCCESS;
     PEXTENT_MAP RelocExtent;
     PEXTENT_MAP RelocExtent_saved = NULL;
+    PUCHAR BufferBase = Buffer;
+    SIZE_T BufferOffset = 0;
+    uint32 RelocExtentIndex;
 
     uint32 Lba = (uint32)(StartingOffset >> Vcb->SectorShift);
     uint32 BCount = ByteCount >> Vcb->SectorShift;
@@ -320,17 +325,17 @@ UDFReadWriteSectorsRaw(
 
         RelocExtent_saved = RelocExtent;
 
-        for (; RelocExtent->extLength; RelocExtent++) {
+        for (RelocExtentIndex = 0; RelocExtent[RelocExtentIndex].extLength; RelocExtentIndex++) {
 
-            rLba = RelocExtent->extLocation;
-            uint32 FragLength = RelocExtent->extLength;
+            rLba = RelocExtent[RelocExtentIndex].extLocation;
+            uint32 FragLength = RelocExtent[RelocExtentIndex].extLength;
             uint32 FragBCount = FragLength >> Vcb->SectorShift;
 
             if (!IsWrite) {
 
                 if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->SessionEndLba + 1)) {
-                    RtlZeroMemory(Buffer, FragLength);
-                    *((uint32*)&Buffer) += FragLength;
+                    RtlZeroMemory(&BufferBase[BufferOffset], FragLength);
+                    BufferOffset += FragLength;
                     continue;
                 }
 
@@ -340,7 +345,7 @@ UDFReadWriteSectorsRaw(
                 rLba = UDFFixFPAddress(Vcb, rLba);
 
                 RC = UDFSendSectorIo(IrpContext,
-                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         Vcb->TargetDeviceObject, &BufferBase[BufferOffset], FragLength,
                          ((uint64)rLba) << Vcb->SectorShift, FALSE);
 
                 Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
@@ -351,12 +356,12 @@ UDFReadWriteSectorsRaw(
                 if (!NT_SUCCESS(RC)) break;
 
                 RC = UDFSendSectorIo(IrpContext,
-                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         Vcb->TargetDeviceObject, &BufferBase[BufferOffset], FragLength,
                          ((uint64)rLba) << Vcb->SectorShift, TRUE);
             }
 
             if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += FragLength;
+            BufferOffset += FragLength;
         }
 
 try_exit: NOTHING;
@@ -1073,6 +1078,7 @@ UDFReadData(
 {
     uint32 i, l, Lba, BS = Vcb->SectorSize;
     uint32 BSh = Vcb->SectorShift;
+    SIZE_T BufferOffset = 0;
     NTSTATUS status;
 
     if (!Length) return STATUS_SUCCESS;
@@ -1083,12 +1089,12 @@ UDFReadData(
     Lba = (uint32)(Offset >> BSh);
     if ((i = (uint32)(Offset & (BS - 1)))) {
         l = min(BS - i, Length);
-        status = UDFReadInSector(IrpContext, Vcb, Lba, i, l, Buffer);
+        status = UDFReadInSector(IrpContext, Vcb, Lba, i, l, &Buffer[BufferOffset]);
         if (!NT_SUCCESS(status)) return status;
         Length -= l;
         if (!Length) return STATUS_SUCCESS;
         Lba++;
-        Buffer += l;
+        BufferOffset += l;
     }
 
     // Read sector-aligned middle part.
@@ -1097,16 +1103,16 @@ UDFReadData(
         status = UDFReadWriteSectors(IrpContext, Vcb,
                      ((LONGLONG)Lba) << BSh,
                      AlignedBytes,
-                     TRUE, Buffer, FALSE);
+                     TRUE, &Buffer[BufferOffset], FALSE);
         if (!NT_SUCCESS(status)) return status;
-        Buffer += AlignedBytes;
+        BufferOffset += AlignedBytes;
         Lba += AlignedBytes >> BSh;
         Length -= AlignedBytes;
     }
 
     // Read head of the last sector.
     if (!Length) return STATUS_SUCCESS;
-    return UDFReadInSector(IrpContext, Vcb, Lba, 0, Length, Buffer);
+    return UDFReadInSector(IrpContext, Vcb, Lba, 0, Length, &Buffer[BufferOffset]);
 } // end UDFReadData()
 
 NTSTATUS
@@ -1313,6 +1319,7 @@ UDFWriteData(
 {
     uint32 i, l, Lba, BS = Vcb->SectorSize;
     uint32 BSh = Vcb->SectorShift;
+    SIZE_T BufferOffset = 0;
     NTSTATUS status;
     SIZE_T _WrittenBytes;
 
@@ -1336,12 +1343,13 @@ UDFWriteData(
     Lba = (uint32)(Offset >> BSh);
     if ((i = ((uint32)Offset & (BS - 1)))) {
         l = min(BS - i, (uint32)Length);
-        status = UDFWriteInSector(IrpContext, Vcb, Lba, i, l, Buffer, WrittenBytes);
+        status = UDFWriteInSector(IrpContext, Vcb, Lba, i, l,
+                                  &Buffer[BufferOffset], WrittenBytes);
         if (!NT_SUCCESS(status)) return status;
         Length -= l;
         if (!Length) return STATUS_SUCCESS;
         Lba++;
-        Buffer += l;
+        BufferOffset += l;
     }
 
     // Write sector-aligned middle part.
@@ -1350,20 +1358,21 @@ UDFWriteData(
         status = UDFReadWriteSectors(IrpContext, Vcb,
                      ((LONGLONG)Lba) << BSh,
                      AlignedBytes,
-                     TRUE, Buffer, TRUE);
+                     TRUE, &Buffer[BufferOffset], TRUE);
 
         _WrittenBytes = NT_SUCCESS(status) ? AlignedBytes : 0;
         *WrittenBytes += _WrittenBytes;
         if (!NT_SUCCESS(status)) return status;
 
         Lba += AlignedBytes >> BSh;
-        Buffer += AlignedBytes;
+        BufferOffset += AlignedBytes;
         Length -= AlignedBytes;
     }
 
     if (!Length) return STATUS_SUCCESS;
 
-    status = UDFWriteInSector(IrpContext, Vcb, Lba, 0, (uint32)Length, Buffer, &_WrittenBytes);
+    status = UDFWriteInSector(IrpContext, Vcb, Lba, 0, (uint32)Length,
+                              &Buffer[BufferOffset], &_WrittenBytes);
     *WrittenBytes += _WrittenBytes;
 
     return status;

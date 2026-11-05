@@ -114,18 +114,19 @@ CowRegionIo(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_COW Cow, BOOLEAN Mirror,
 {
     NTSTATUS status;
     uint32 lba, avail, n;
+    SIZE_T BufferOffset = 0;
 
     while (Count) {
         lba = CowLbnToPhys(Cow, Mirror, Region, Lbn, &avail);
         if (lba == LBA_OUT_OF_EXTENT)
             return STATUS_FILE_CORRUPT_ERROR;
         n = min(avail, Count);
-        status = CowRaw(IrpContext, Vcb, lba, n, Buffer, Write);
+        status = CowRaw(IrpContext, Vcb, lba, n, &Buffer[BufferOffset], Write);
         if (!NT_SUCCESS(status))
             return status;
         Lbn += n;
         Count -= n;
-        Buffer += ((SIZE_T)n) << Vcb->SectorShift;
+        BufferOffset += ((SIZE_T)n) << Vcb->SectorShift;
     }
     return STATUS_SUCCESS;
 }
@@ -170,7 +171,6 @@ CowWriteFe(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo,
     uint32 physRef = Vcb->MetadataPhysRef, adSize, i;
     uint16 allocMode = ((PFILE_ENTRY)dloc->FileEntry)->icbTag.flags & ICB_FLAG_ALLOC_MASK;
     int8* sector;
-    int8* ad;
     NTSTATUS status;
 
     adSize = allocMode == ICB_FLAG_AD_SHORT ? sizeof(SHORT_AD) : sizeof(LONG_AD);
@@ -181,8 +181,8 @@ CowWriteFe(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo,
         return STATUS_INSUFFICIENT_RESOURCES;
     RtlZeroMemory(sector, Vcb->SectorSize);
     RtlCopyMemory(sector, dloc->FileEntry, feLen);
-    ad = sector + feLen;
-    for (i = 0; i < Count; i++, ad += adSize) {
+    for (i = 0; i < Count; i++) {
+        int8* ad = &sector[feLen + i * adSize];
         uint32 pos = UDFPhysLbaToPart(Vcb, physRef, Runs[i].Lba[Region]);
         if (allocMode == ICB_FLAG_AD_SHORT) {
             PSHORT_AD s = (PSHORT_AD)ad;

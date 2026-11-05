@@ -407,24 +407,24 @@ UDFPhysLbaToMetadata(
     IN uint32 Lba
 )
 {
-    PEXTENT_MAP Map;
+    PEXTENT_MAP Mapping;
 
     if (
         !Vcb->MetadataFileInfo ||
-        !(Map = Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping)
+        !(Mapping = Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping)
     )
         return LBA_OUT_OF_EXTENT;
 
     uint32 len, off = 0;    
 
-    for (; Map->extLength; Map++) {
-        len = (Map->extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->SectorShift;
+    for (uint32 i = 0; Mapping[i].extLength; i++) {
+        len = (Mapping[i].extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->SectorShift;
         
         if (
-            ((Map->extLength >> 30) != EXTENT_NOT_RECORDED_NOT_ALLOCATED) &&
-            (Map->extLocation <= Lba) && (Lba < Map->extLocation + len)
+            ((Mapping[i].extLength >> 30) != EXTENT_NOT_RECORDED_NOT_ALLOCATED) &&
+            (Mapping[i].extLocation <= Lba) && (Lba < Mapping[i].extLocation + len)
         )
-            return off + (Lba - Map->extLocation);
+            return off + (Lba - Mapping[i].extLocation);
         
         off += len;
     }
@@ -1036,15 +1036,14 @@ UDFGetRefPartNumByPhysLba(
     )
 {
     uint32 i, root;
-    PUDFPartMap pm = Vcb->Partitions;
-
     if (
         Vcb->MetadataFileInfo &&
         (UDFPhysLbaToMetadata(Vcb, Lba) != LBA_OUT_OF_EXTENT)
     )
         return Vcb->MetadataRef;
 
-    for (i = 0; i < Vcb->PartitionMaps; i++, pm++) {
+    for (i = 0; i < Vcb->PartitionMaps; i++) {
+        PUDFPartMap pm = &Vcb->Partitions[i];
 
         if ((pm->PartitionType != UDF_SPARABLE_MAP15) &&
             (pm->PartitionType != UDF_TYPE1_MAP15)

@@ -871,10 +871,10 @@ swp_loc:
                         break;
                     }
                 }
-                for (uint32 s = 0; s < Vcb->SparingCount; s++, DiskMap++) {
-                    if (DiskMap->origLocation != SPARING_LOC_AVAILABLE &&
-                        DiskMap->origLocation != SPARING_LOC_CORRUPTED) {
-                        DiskMap->origLocation -= PartRoot;
+                for (uint32 s = 0; s < Vcb->SparingCount; s++) {
+                    if (DiskMap[s].origLocation != SPARING_LOC_AVAILABLE &&
+                        DiskMap[s].origLocation != SPARING_LOC_CORRUPTED) {
+                        DiskMap[s].origLocation -= PartRoot;
                     }
                 }
             }
@@ -2634,10 +2634,10 @@ UDFLoadPartDesc(
                 Vcb->Partitions[i].PartitionType == UDF_SPARABLE_MAP15) {
 
                 PSPARING_MAP Map = Vcb->SparingTable;
-                for (uint32 s = 0; s < Vcb->SparingCount; s++, Map++) {
-                    if (Map->origLocation != SPARING_LOC_AVAILABLE &&
-                        Map->origLocation != SPARING_LOC_CORRUPTED) {
-                        Map->origLocation += Vcb->Partitions[i].PartitionRoot;
+                for (uint32 s = 0; s < Vcb->SparingCount; s++) {
+                    if (Map[s].origLocation != SPARING_LOC_AVAILABLE &&
+                        Map[s].origLocation != SPARING_LOC_CORRUPTED) {
+                        Map[s].origLocation += Vcb->Partitions[i].PartitionRoot;
                     }
                 }
             }
@@ -3228,12 +3228,13 @@ GetPhSerialNum(
 {
     UCHAR Sum[4];
     ULONG Count = sizeof(FILE_SET_DESC);
-    UCHAR* Byte = (UCHAR*)fset;
+    UCHAR* Bytes = (UCHAR*)fset;
+    ULONG i;
     
     RtlZeroMemory(Sum, sizeof(Sum));
 
-    while (Count--)
-        Sum[Count & 0b11] += *(Byte++);
+    for (i = 0; i < Count; i++)
+        Sum[(Count - i - 1) & 0b11] += Bytes[i];
 
     return ((ULONG)Sum[0] << 24) | ((ULONG)Sum[1] << 16) | ((ULONG)Sum[2] << 8) | (Sum[3] << 0);
 }
@@ -3646,4 +3647,3 @@ try_exit:   NOTHING;
     return(RC);
 
 } // end UDFGetDiskInfoAndVerify()
-

@@ -41,14 +41,13 @@ UDFExtentOffsetToLba(
 
     BOffset = (uint32)(Offset >> BSh);
     // scan extent table for suitable range (frag)
-    ExtPrint(("ExtLen %x\n", Extent->extLength));
-    while(i+(d = (l = (Extent->extLength & UDF_EXTENT_LENGTH_MASK)) >> BSh) <= BOffset) {
+    ExtPrint(("ExtLen %x\n", Extent[j].extLength));
+    while(i+(d = (l = (Extent[j].extLength & UDF_EXTENT_LENGTH_MASK)) >> BSh) <= BOffset) {
 
         if (!l) {
             if (Index) (*Index) = j-1;
             if (Flags) {
-                Extent--;
-                (*Flags) = (Extent->extLength >> 30);
+                (*Flags) = (Extent[j - 1].extLength >> 30);
             }
             return LBA_OUT_OF_EXTENT;
         }
@@ -56,7 +55,6 @@ UDFExtentOffsetToLba(
             break;
         i += d; //frag offset
         j++; // frag index
-        Extent++;
     }
     BOffset -= i;
     Offs = (*((uint32*)&Offset)) - (i << BSh); // offset in frag
@@ -66,13 +64,14 @@ UDFExtentOffsetToLba(
     if (AvailLength)
         (*AvailLength) = l - Offs;// bytes to EO frag
     if (Flags)
-        (*Flags) = (Extent->extLength >> 30);
+        (*Flags) = (Extent[j].extLength >> 30);
     if (Index)
         (*Index) = j;
 
-    ASSERT(((Extent->extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) || Extent->extLocation);
+    ASSERT(((Extent[j].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) ||
+           Extent[j].extLocation);
 
-    return Extent->extLocation + BOffset;// 1st Lba
+    return Extent[j].extLocation + BOffset;// 1st Lba
 } // end UDFExtentOffsetToLba()
 
 uint32
@@ -95,8 +94,7 @@ UDFNextExtentToLba(
 
     if (!l) {
         (*Index) = -1;
-        Extent--;
-        (*Flags) = (Extent->extLength >> 30);
+        (*Flags) = (Extent[-1].extLength >> 30);
         return LBA_OUT_OF_EXTENT;
     }
 
@@ -122,14 +120,13 @@ UDFLocateLbaInExtent(
     uint32 l, BSh = Vcb->SectorShift;
     uint32 i=0;
 
-    while((l = ((Extent->extLength & UDF_EXTENT_LENGTH_MASK) >> BSh))) {
+    while((l = ((Extent[i].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh))) {
 
-        if (Extent->extLocation   >= lba &&
-           Extent->extLocation+l <  lba) {
+        if (Extent[i].extLocation   >= lba &&
+           Extent[i].extLocation+l <  lba) {
             return i;
         }
         i++; //frag offset
-        Extent++;
     }
     return LBA_OUT_OF_EXTENT;// index of item in extent, containing out Lba
 } // end UDFLocateLbaInExtent()
@@ -146,9 +143,10 @@ UDFGetExtentLength(
     if (!Extent) return 0;
     int64 i=0;
 
-    while(Extent->extLength) {
-        i += (Extent->extLength & UDF_EXTENT_LENGTH_MASK);
-        Extent++;
+    uint32 extentIndex = 0;
+    while(Extent[extentIndex].extLength) {
+        i += (Extent[extentIndex].extLength & UDF_EXTENT_LENGTH_MASK);
+        extentIndex++;
     }
 
     return i;
@@ -201,9 +199,8 @@ UDFGetMappingLength(
     if (!Extent) return 0;
     uint32 i=0;
 
-    while(Extent->extLength) {
+    while(Extent[i].extLength) {
         i++;
-        Extent++;
     }
     i++;
     i*=sizeof(EXTENT_MAP);
@@ -463,21 +460,21 @@ UDFSplitMetadataMapping(
 {
     SIZE_T avail;
     BOOLEAN Split = FALSE;
-    PEXTENT_MAP NewExtent, Src, Dst;
+    PEXTENT_MAP NewExtent;
     uint32 n = 0, type, len, lbn, piece, BSh = Vcb->SectorShift;
 
-    for (Src = Extent; Src->extLength; Src++) {
+    for (uint32 srcIndex = 0; Extent[srcIndex].extLength; srcIndex++) {
 
-        type = Src->extLength >> 30;
+        type = Extent[srcIndex].extLength >> 30;
         
-        len = Src->extLength & UDF_EXTENT_LENGTH_MASK;
+        len = Extent[srcIndex].extLength & UDF_EXTENT_LENGTH_MASK;
         n++;
         
         if (type == EXTENT_NOT_RECORDED_NOT_ALLOCATED) {
             continue;
         }
         
-        lbn = UDFPhysLbaToMetadata(Vcb, Src->extLocation);
+        lbn = UDFPhysLbaToMetadata(Vcb, Extent[srcIndex].extLocation);
         
         if (lbn == LBA_OUT_OF_EXTENT) {
             continue;
@@ -505,25 +502,23 @@ UDFSplitMetadataMapping(
         return NULL;
     }
 
-    Dst = NewExtent;
+    uint32 dstIndex = 0;
+    for (uint32 srcIndex = 0; Extent[srcIndex].extLength; srcIndex++) {
+        type = Extent[srcIndex].extLength >> 30;
 
-    for (Src = Extent; Src->extLength; Src++) {
-        type = Src->extLength >> 30;
-
-        len = Src->extLength & UDF_EXTENT_LENGTH_MASK;
+        len = Extent[srcIndex].extLength & UDF_EXTENT_LENGTH_MASK;
         lbn = (type == EXTENT_NOT_RECORDED_NOT_ALLOCATED) ? LBA_OUT_OF_EXTENT :
-                  UDFPhysLbaToMetadata(Vcb, Src->extLocation);
+                  UDFPhysLbaToMetadata(Vcb, Extent[srcIndex].extLocation);
         
         if (lbn == LBA_OUT_OF_EXTENT) {
-            *Dst = *Src;
-            Dst++;
+            NewExtent[dstIndex++] = Extent[srcIndex];
             continue;
         }
 
         while (len) {
-            Dst->extLocation = UDFMetadataLbaToPhys(Vcb, lbn, &avail);
+            NewExtent[dstIndex].extLocation = UDFMetadataLbaToPhys(Vcb, lbn, &avail);
 
-            if (Dst->extLocation == LBA_OUT_OF_EXTENT) {
+            if (NewExtent[dstIndex].extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("UDFSplitMetadataMapping: Metadata File doesn't have the lbn %x\n", lbn));
                 MyFreePool__(NewExtent);
                 MyFreePool__(Extent);
@@ -531,16 +526,16 @@ UDFSplitMetadataMapping(
             }
 
             piece = (avail < len) ? (uint32)avail : len;
-            Dst->extLength = piece | (type << 30);
-            Dst++;
+            NewExtent[dstIndex].extLength = piece | (type << 30);
+            dstIndex++;
 
             len -= piece;
             lbn += piece >> BSh;
         }
     }
 
-    Dst->extLength = 0;
-    Dst->extLocation = 0;
+    NewExtent[dstIndex].extLength = 0;
+    NewExtent[dstIndex].extLocation = 0;
     MyFreePool__(Extent);
 
     return NewExtent;
@@ -562,7 +557,7 @@ UDFLongAllocDescToMapping(
 {
     uint32 i, lim, l, len, type, Depth = SubCallCount;
     uint32 ResultBytes, ExtentBytes;
-    PEXTENT_MAP Extent = NULL, Result = NULL, Combined, AllocMap, Seen;
+    PEXTENT_MAP Extent = NULL, Result = NULL, Combined, AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC CurrentAllocDesc = NULL, NextAllocDesc = NULL;
     EXTENT_INFO NextAllocLoc;
@@ -607,8 +602,10 @@ UDFLongAllocDescToMapping(
                 }
 
                 /* A repeated AED sector is a cycle, not another valid fragment. */
-                for (Seen = AllocLoc->Mapping; Seen && Seen->extLength; Seen++) {
-                    if (Seen->extLocation == AllocExt.extLocation) {
+                for (uint32 seenIndex = 0;
+                     AllocLoc->Mapping && AllocLoc->Mapping[seenIndex].extLength;
+                     seenIndex++) {
+                    if (AllocLoc->Mapping[seenIndex].extLocation == AllocExt.extLocation) {
                         UDFPrint(("cyclic allocation descriptor chain\n"));
                         goto fail;
                     }
@@ -2819,6 +2816,7 @@ UDFReadExtentCached(
     if (!ExtInfo || !ExtInfo->Mapping) return STATUS_INVALID_PARAMETER;
 
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
+    SIZE_T BufferOffset = 0;
     uint32 to_read, Lba, sect_offs, flags;
     SIZE_T _ReadBytes;
     NTSTATUS status;
@@ -2835,16 +2833,18 @@ UDFReadExtentCached(
         to_read = (to_read < Length) ?
                    to_read : Length;
         if (flags == EXTENT_RECORDED_ALLOCATED) {
-            status = UDFReadDataCached(Vcb, TRUE, ( ((uint64)Lba) << Vcb->BlockSizeBits) + sect_offs, to_read, Buffer, &_ReadBytes);
+            status = UDFReadDataCached(Vcb, TRUE,
+                                       (((uint64)Lba) << Vcb->BlockSizeBits) + sect_offs,
+                                       to_read, &Buffer[BufferOffset], &_ReadBytes);
             (*ReadBytes) += _ReadBytes;
         } else {
-            RtlZeroMemory(Buffer, to_read);
+            RtlZeroMemory(&Buffer[BufferOffset], to_read);
             (*ReadBytes) += to_read;
             status = STATUS_SUCCESS;
         }
         if (!NT_SUCCESS(status)) return status;
         // prepare for reading next frag...
-        Buffer += to_read;
+        BufferOffset += to_read;
         Offset += to_read;
         Length -= to_read;
     }
@@ -2872,35 +2872,39 @@ UDFReadExtent(
 
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
     SIZE_T to_read;
+    SIZE_T BufferOffset = 0;
     uint32 Lba, sect_offs, flags;
-    uint32 index;
+    uint32 index, ExtentIndex = 0;
     NTSTATUS status;
     // prevent reading out of data space
     if (Offset > ExtInfo->Length) return STATUS_END_OF_FILE;
     if (Offset+Length > ExtInfo->Length) Length = (uint32)(ExtInfo->Length - Offset);
     Offset += ExtInfo->Offset;               // used for in-ICB data
     // read maximal possible part of each frag of extent
-    Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_read, &flags, &index);
+    Lba = UDFExtentOffsetToLba(Vcb, &Extent[ExtentIndex], Offset,
+                               &sect_offs, &to_read, &flags, &index);
     while(Length) {
         // EOF check
         if (Lba == LBA_OUT_OF_EXTENT) return STATUS_END_OF_FILE;
-        Extent += (index + 1);
+        ExtentIndex += index + 1;
         // check for reading tail
         to_read = min(to_read, Length);
         if (flags == EXTENT_RECORDED_ALLOCATED) {
-            status = UDFReadData(IrpContext, Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_read, Direct, Buffer);
+            status = UDFReadData(IrpContext, Vcb, TRUE,
+                                 (((uint64)Lba) << Vcb->SectorShift) + sect_offs,
+                                 to_read, Direct, &Buffer[BufferOffset]);
             if (!NT_SUCCESS(status)) return status;
         } else {
-            RtlZeroMemory(Buffer, to_read);
+            RtlZeroMemory(&Buffer[BufferOffset], to_read);
         }
         // prepare for reading next frag...
         Length -= to_read;
         if (!Length)
             break;
         ASSERT(to_read);
-        Buffer += to_read;
+        BufferOffset += to_read;
 //        Offset += to_read;
-        Lba = UDFNextExtentToLba(Vcb, Extent, &to_read, &flags, &index);
+        Lba = UDFNextExtentToLba(Vcb, &Extent[ExtentIndex], &to_read, &flags, &index);
         sect_offs = 0;
     }
     return STATUS_SUCCESS;
@@ -2928,7 +2932,7 @@ UDFReadExtentLocation(
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
     PEXTENT_MAP SubExtInfo;
     SIZE_T to_read;
-    uint32 Lba, sect_offs, flags, Skip_MapEntries;
+    uint32 Lba, sect_offs, flags, Skip_MapEntries, ExtentIndex = 0;
     int32 SubExtInfoSz = *_SubExtInfoSz;
     int64 Length;
     int64 NextOffset;
@@ -2949,14 +2953,15 @@ UDFReadExtentLocation(
     if (!SubExtInfo)
         return STATUS_INSUFFICIENT_RESOURCES;
 
-    Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_read, &flags, &Skip_MapEntries);
+    Lba = UDFExtentOffsetToLba(Vcb, &Extent[ExtentIndex], Offset,
+                               &sect_offs, &to_read, &flags, &Skip_MapEntries);
     while(Length && SubExtInfoSz) {
         // EOF check
         if (Lba == LBA_OUT_OF_EXTENT) {
             BrutePoint();
             return STATUS_END_OF_FILE;
         }
-        Extent += (Skip_MapEntries + 1);
+        ExtentIndex += Skip_MapEntries + 1;
         // check for reading tail
         to_read = (int32)min((int64)to_read, Length);
         SubExtInfo->extLength   = to_read;
@@ -2979,7 +2984,7 @@ UDFReadExtentLocation(
             break;
         }
         ASSERT(to_read);
-        Lba = UDFNextExtentToLba(Vcb, Extent, &to_read, &flags, &Skip_MapEntries);
+        Lba = UDFNextExtentToLba(Vcb, &Extent[ExtentIndex], &to_read, &flags, &Skip_MapEntries);
         sect_offs = 0;
     }
     (*_NextOffset) = NextOffset;
@@ -3030,6 +3035,7 @@ UDFWriteExtent(
         return STATUS_INVALID_PARAMETER;
 
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
+    SIZE_T BufferOffset = 0;
     uint32 Lba, sect_offs, flags;
     NTSTATUS status;
     SIZE_T to_write, _WrittenBytes;
@@ -3122,7 +3128,7 @@ UDFWriteExtent(
                 int8* SectorBuf = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
                 if (SectorBuf) {
                     RtlZeroMemory(SectorBuf, Vcb->SectorSize);
-                    RtlCopyMemory(SectorBuf + sect_offs, Buffer, PartialWriteLen);
+                    RtlCopyMemory(SectorBuf + sect_offs, &Buffer[BufferOffset], PartialWriteLen);
                     status = UDFWriteData(IrpContext, Vcb, TRUE,
                                           ((uint64)Lba) << Vcb->SectorShift,
                                           Vcb->SectorSize, Direct, SectorBuf, &_WrittenBytes);
@@ -3130,7 +3136,7 @@ UDFWriteExtent(
                     if (!NT_SUCCESS(status))
                         return status;
                     *WrittenBytes += PartialWriteLen;
-                    Buffer += PartialWriteLen;
+                    BufferOffset += PartialWriteLen;
                     Offset += PartialWriteLen;
                     Length -= PartialWriteLen;
                     continue;
@@ -3175,7 +3181,9 @@ UDFWriteExtent(
         }
         ASSERT(to_write);
 //        if (!prepare) {
-        status = UDFWriteData(IrpContext, Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_write, Direct, Buffer, &_WrittenBytes);
+        status = UDFWriteData(IrpContext, Vcb, TRUE,
+                              (((uint64)Lba) << Vcb->SectorShift) + sect_offs,
+                              to_write, Direct, &Buffer[BufferOffset], &_WrittenBytes);
         *WrittenBytes += _WrittenBytes;
         if (!NT_SUCCESS(status)) return status;
 /*        } else {
@@ -3183,7 +3191,7 @@ UDFWriteExtent(
             *WrittenBytes += to_write;
         }*/
         // prepare for writing next frag...
-        Buffer += to_write;
+        BufferOffset += to_write;
         Offset += to_write;
         Length -= to_write;
     }

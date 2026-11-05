@@ -21,7 +21,6 @@ UDFDissectName(
     )
 {
     ULONG NameLength;
-    PWCHAR NextWchar;
 
     //
     //  Check for stream prefix (':')
@@ -32,7 +31,7 @@ UDFDissectName(
         *IsStream = TRUE;
 
         // Skip the ':' prefix
-        RemainingName->Buffer++;
+        RemainingName->Buffer = &RemainingName->Buffer[1];
         RemainingName->Length -= sizeof(WCHAR);
         RemainingName->MaximumLength -= sizeof(WCHAR);
     } else {
@@ -44,7 +43,7 @@ UDFDissectName(
         //
         while (RemainingName->Length >= sizeof(WCHAR) &&
                RemainingName->Buffer[0] == L'\\') {
-            RemainingName->Buffer++;
+            RemainingName->Buffer = &RemainingName->Buffer[1];
             RemainingName->Length -= sizeof(WCHAR);
             RemainingName->MaximumLength -= sizeof(WCHAR);
         }
@@ -54,9 +53,11 @@ UDFDissectName(
     //  Find the offset of the next component separator (backslash or colon).
     //  Use Length for bounds checking - do NOT rely on null terminator!
     //
-    for (NameLength = 0, NextWchar = RemainingName->Buffer;
-         (NameLength < RemainingName->Length) && (*NextWchar != L'\\') && (*NextWchar != L':');
-         NameLength += sizeof(WCHAR), NextWchar++);
+    for (NameLength = 0;
+         (NameLength < RemainingName->Length) &&
+         (RemainingName->Buffer[NameLength / sizeof(WCHAR)] != L'\\') &&
+         (RemainingName->Buffer[NameLength / sizeof(WCHAR)] != L':');
+         NameLength += sizeof(WCHAR));
 
     //
     //  Set FinalName to the extracted component
@@ -76,12 +77,12 @@ UDFDissectName(
         // ':' separator — keep it in RemainingName
         RemainingName->MaximumLength -= (USHORT)NameLength;
         RemainingName->Length -= (USHORT)NameLength;
-        RemainingName->Buffer = (PWCHAR)((PCHAR)RemainingName->Buffer + NameLength);
+        RemainingName->Buffer = &RemainingName->Buffer[NameLength / sizeof(WCHAR)];
     } else {
         // '\' separator — consume it
         RemainingName->MaximumLength -= (USHORT)(NameLength + sizeof(WCHAR));
         RemainingName->Length -= (USHORT)(NameLength + sizeof(WCHAR));
-        RemainingName->Buffer = (PWCHAR)((PCHAR)RemainingName->Buffer + NameLength + sizeof(WCHAR));
+        RemainingName->Buffer = &RemainingName->Buffer[NameLength / sizeof(WCHAR) + 1];
     }
 
 } // end UDFDissectName()
@@ -94,17 +95,15 @@ UDFIsNameValid(
 ) {
     LONG   Index, l;
     BOOLEAN _StreamOpen = FALSE;
-    PWCHAR Buffer;
     WCHAR c, c0;
 
     if (StreamOpen) (*StreamOpen) = FALSE;
     // We can't create nameless file or too long path
     if (!(l = SearchPattern->Length/sizeof(WCHAR)) ||
         (l>UDF_X_PATH_LEN)) return FALSE;
-    Buffer = SearchPattern->Buffer;
-    for(Index = 0; Index<l; Index++, Buffer++) {
+    for(Index = 0; Index<l; Index++) {
         // Check for disallowed characters
-        c = (*Buffer);
+        c = SearchPattern->Buffer[Index];
         if ((c == L'*') ||
            (c == L'>') ||
            (c == L'\"') ||
@@ -222,28 +221,24 @@ UDFIsMatchAllMask(
     )
 {
     USHORT i;
-    PWCHAR Buffer;
-
     if (DosOpen)
         *DosOpen = FALSE;
-    Buffer = Name->Buffer;
     if (Name->Length == sizeof(WCHAR)) {
         // Win32-style wildcard
-        if ((*Buffer) != L'*')
+        if (Name->Buffer[0] != L'*')
             return FALSE;
         return TRUE;
     } else
     if (Name->Length == sizeof(WCHAR)*(8+1+3)) {
         // DOS-style wildcard
-        for(i=0;i<8;i++,Buffer++) {
-            if ((*Buffer) != DOS_QM)
+        for(i=0;i<8;i++) {
+            if (Name->Buffer[i] != DOS_QM)
                 return FALSE;
         }
-        if ((*Buffer) != DOS_DOT)
+        if (Name->Buffer[8] != DOS_DOT)
             return FALSE;
-        Buffer++;
-        for(i=9;i<12;i++,Buffer++) {
-            if ((*Buffer) != DOS_QM)
+        for(i=9;i<12;i++) {
+            if (Name->Buffer[i] != DOS_QM)
                 return FALSE;
         }
         if (DosOpen)
@@ -252,11 +247,11 @@ UDFIsMatchAllMask(
     } else
     if (Name->Length == sizeof(WCHAR)*(3)) {
         // DOS-style wildcard
-        if (Buffer[0] != DOS_STAR)
+        if (Name->Buffer[0] != DOS_STAR)
             return FALSE;
-        if (Buffer[1] != DOS_DOT)
+        if (Name->Buffer[1] != DOS_DOT)
             return FALSE;
-        if (Buffer[2] != DOS_STAR)
+        if (Name->Buffer[2] != DOS_STAR)
             return FALSE;
         if (DosOpen)
             *DosOpen = TRUE;
@@ -277,13 +272,11 @@ UDFCanNameBeA8dot3(
     ULONG i,l;
     ULONG dot_pos=0;
     ULONG ext_len=0;
-    PWCHAR buff = Name->Buffer;
-
     l = Name->Length / sizeof(WCHAR);
 
-    for(i=0; i<l; i++, buff++) {
-        if ( ((*buff) == L'.') ||
-            ((*buff) == DOS_DOT) ) {
+    for(i=0; i<l; i++) {
+        if ((Name->Buffer[i] == L'.') ||
+            (Name->Buffer[i] == DOS_DOT)) {
             if (dot_pos)
                 return FALSE;
             dot_pos = i+1;

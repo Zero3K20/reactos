@@ -74,7 +74,6 @@ UDFRemapPacket(
     )
 {
     uint32 i, max, BS, orig;
-    PSPARING_MAP Map;
     BOOLEAN verified = FALSE;
 
     if (Vcb->SparingTable) {
@@ -88,14 +87,14 @@ UDFRemapPacket(
 re_check:
             UDFPrint(("verify spare area\n"));
             Vcb->SparingCountFree = 0;
-            Map = Vcb->SparingTable;
-            for(i=0;i<max;i++,Map++) {
-                if (Map->origLocation == SPARING_LOC_AVAILABLE) {
-                    if (UDFCheckArea(IrpContext, Vcb, Map->mappedLocation, BS)) {
+            for(i=0;i<max;i++) {
+                if (Vcb->SparingTable[i].origLocation == SPARING_LOC_AVAILABLE) {
+                    if (UDFCheckArea(IrpContext, Vcb, Vcb->SparingTable[i].mappedLocation, BS)) {
                         Vcb->SparingCountFree++;
                     } else {
-                        UDFPrint(("initial check: bad spare block @ %x\n", Map->mappedLocation));
-                        Map->origLocation = SPARING_LOC_CORRUPTED;
+                        UDFPrint(("initial check: bad spare block @ %x\n",
+                                  Vcb->SparingTable[i].mappedLocation));
+                        Vcb->SparingTable[i].origLocation = SPARING_LOC_CORRUPTED;
                         Vcb->SparingTableModified = TRUE;
                     }
                 }
@@ -106,14 +105,14 @@ re_check:
             return STATUS_DISK_FULL;
         }
 
-        Map = Vcb->SparingTable;
         Lba &= ~(BS-1);
-        for(i=0;i<max;i++,Map++) {
-            orig = Map->origLocation;
+        for(i=0;i<max;i++) {
+            orig = Vcb->SparingTable[i].origLocation;
             if (Lba == (orig & ~(BS-1)) ) {
                 // already remapped
 
-                UDFPrint(("remap remapped: bad spare block @ %x\n", Map->mappedLocation));
+                UDFPrint(("remap remapped: bad spare block @ %x\n",
+                          Vcb->SparingTable[i].mappedLocation));
                 if (!verified) {
                     verified = TRUE;
                     goto re_check;
@@ -123,18 +122,17 @@ re_check:
                     return STATUS_SHARING_VIOLATION;
                 } else {
                     // look for another remap area
-                    Map->origLocation = SPARING_LOC_CORRUPTED;
+                    Vcb->SparingTable[i].origLocation = SPARING_LOC_CORRUPTED;
                     Vcb->SparingTableModified = TRUE;
                     Vcb->SparingCountFree--;
                     break;
                 }
             }
         }
-        Map = Vcb->SparingTable;
-        for(i=0;i<max;i++,Map++) {
-            if (Map->origLocation == SPARING_LOC_AVAILABLE) {
-                UDFPrint(("remap %x -> %x\n", Lba, Map->mappedLocation));
-                Map->origLocation = Lba;
+        for(i=0;i<max;i++) {
+            if (Vcb->SparingTable[i].origLocation == SPARING_LOC_AVAILABLE) {
+                UDFPrint(("remap %x -> %x\n", Lba, Vcb->SparingTable[i].mappedLocation));
+                Vcb->SparingTable[i].origLocation = Lba;
                 Vcb->SparingTableModified = TRUE;
                 Vcb->SparingCountFree--;
                 return STATUS_SUCCESS;
@@ -158,16 +156,14 @@ UDFUnmapRange(
     )
 {
     uint32 i, max, BS, orig;
-    PSPARING_MAP Map;
 
     if (Vcb->SparingTable) {
         // use sparing table for relocation
 
         max = Vcb->SparingCount;
         BS = Vcb->SparingBlockSize;
-        Map = Vcb->SparingTable;
-        for(i=0;i<max;i++,Map++) {
-            orig = Map->origLocation;
+        for(i=0;i<max;i++) {
+            orig = Vcb->SparingTable[i].origLocation;
             switch(orig) {
             case SPARING_LOC_AVAILABLE:
             case SPARING_LOC_CORRUPTED:
@@ -176,8 +172,8 @@ UDFUnmapRange(
             if (orig >= Lba &&
               (orig+BS) <= (Lba+BCount)) {
                 // unmap
-                UDFPrint(("unmap %x -> %x\n", orig, Map->mappedLocation));
-                Map->origLocation = SPARING_LOC_AVAILABLE;
+                UDFPrint(("unmap %x -> %x\n", orig, Vcb->SparingTable[i].mappedLocation));
+                Vcb->SparingTable[i].origLocation = SPARING_LOC_AVAILABLE;
                 Vcb->SparingTableModified = TRUE;
                 Vcb->SparingCountFree++;
             }
@@ -201,29 +197,26 @@ UDFRelocateSector(
     if (Vcb->SparingTable) {
         // use sparing table for relocation
         uint32 _Lba;
-        PSPARING_MAP Map = Vcb->SparingTable;
-
         max = Vcb->SparingCount;
         BS = Vcb->SparingBlockSize;
         _Lba = Lba & ~(BS-1);
-        for(i=0;i<max;i++,Map++) {
-            orig = Map->origLocation;
+        for(i=0;i<max;i++) {
+            orig = Vcb->SparingTable[i].origLocation;
             if (_Lba == (orig & ~(BS-1)) ) {
-            //if ( (Lba >= (orig = Map->origLocation)) && (Lba < orig + BS) ) {
-                return Map->mappedLocation + Lba - orig;
+            //if ((Lba >= orig) && (Lba < orig + BS)) {
+                return Vcb->SparingTable[i].mappedLocation + Lba - orig;
             }
         }
     } else if (Vcb->Vat) {
         // use VAT for relocation
-        uint32* Map = Vcb->Vat;
         uint32 root;
         // check if given Lba lays in the partition covered by VAT
         if (Lba >= Vcb->NWA)
             return Vcb->NWA;
         if (Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
             return Lba;
-        Map = &(Vcb->Vat[(i = Lba - root)]);
-        if ((i < Vcb->VatCount) && (i=(*Map)) ) {
+        i = Lba - root;
+        if ((i < Vcb->VatCount) && (i = Vcb->Vat[i])) {
             if (i != UDF_VAT_FREE_ENTRY) {
                 return i + root;
             } else {
@@ -250,11 +243,8 @@ UDFAreSectorsRelocated(
         // use sparing table for relocation
         uint32 i, BS, orig;
         BS = Vcb->SparingBlockSize;
-        PSPARING_MAP Map;
-
-        Map = Vcb->SparingTable;
-        for(i=0;i<Vcb->SparingCount;i++,Map++) {
-            if ( ((Lba >= (orig = Map->origLocation)) && (Lba < orig + BS)) ||
+        for(i=0;i<Vcb->SparingCount;i++) {
+            if ( ((Lba >= (orig = Vcb->SparingTable[i].origLocation)) && (Lba < orig + BS)) ||
                 ((Lba+BlockCount-1 >= orig) && (Lba+BlockCount-1 < orig + BS)) ||
                 ((orig >= Lba) && (orig < Lba+BlockCount)) ||
                 ((orig+BS >= Lba) && (orig+BS < Lba+BlockCount)) ) {
@@ -264,14 +254,12 @@ UDFAreSectorsRelocated(
     } else if (Vcb->Vat) {
         // use VAT for relocation
         uint32 i, root, j;
-        uint32* Map;
         if (Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
             return FALSE;
         if (Lba+BlockCount >= Vcb->NWA)
             return TRUE;
-        Map = &(Vcb->Vat[Lba-root/*+i*/]);
-        for(i=0; i<BlockCount; i++, Map++) {
-            if ((j = (*Map)) &&
+        for(i=0; i<BlockCount; i++) {
+            if ((j = Vcb->Vat[Lba-root+i]) &&
                (j != Lba-root+i) &&
                ((j != UDF_VAT_FREE_ENTRY) || ((Lba+i) < Vcb->SessionEndLba)))
                 return TRUE;
@@ -319,4 +307,3 @@ UDFRelocateSectors(
     }
     return Extent;
 } // end UDFRelocateSectors()
-

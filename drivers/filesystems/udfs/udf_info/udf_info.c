@@ -123,7 +123,6 @@ UDFDecompressUnicode(
     uint32 unicodeIndex = 0;
     uint32 byteIndex = 1;
     PWCHAR buff;
-    uint8* _CS0 = CS0+1;
 
     if (!Length) goto return_empty_str;
     // First check for valid compID.
@@ -136,10 +135,8 @@ UDFDecompressUnicode(
 
         // Loop through all the bytes.
         while (byteIndex < Length) {
-            (*buff) = (*_CS0);
-            _CS0++;
+            buff[byteIndex - 1] = CS0[byteIndex];
             byteIndex++;
-            buff++;
         }
         unicodeIndex = byteIndex-1;
         break;
@@ -153,11 +150,9 @@ UDFDecompressUnicode(
         // Loop through all the bytes.
         while (byteIndex < Length) {
             // Move the first byte to the high bits of the unicode char.
-            *buff = ((*_CS0) << 8) | (*(_CS0+1));
-            _CS0+=2;
+            buff[unicodeIndex] = (CS0[byteIndex] << 8) | CS0[byteIndex + 1];
             byteIndex+=2;
             unicodeIndex++;
-            buff++;
             ASSERT(byteIndex <= Length);
         }
         break;
@@ -192,14 +187,13 @@ UDFCompressUnicode(
     uint8 compID;
     uint16 unicodeIndex;
     uint32 i, len;
-    PWCHAR Buff;
+    uint32 CS0Index;
 
     len = (UName->Length) / sizeof(WCHAR);
     compID = (!len) ? 0 : UDF_COMP_ID_8;
     // check for uncompressable characters
-    Buff = UName->Buffer;
-    for(i=0; i<len; i++, Buff++) {
-        if ((*Buff) & 0xff00) {
+    for(i=0; i<len; i++) {
+        if (UName->Buffer[i] & 0xff00) {
             compID = UDF_COMP_ID_16;
             break;
         }
@@ -211,26 +205,20 @@ UDFCompressUnicode(
     CS0[0] = compID;
     *_CS0 = CS0;
     // init loop
-    CS0++;
+    CS0Index = 1;
     unicodeIndex = 0;
-    Buff = UName->Buffer;
     if (compID == UDF_COMP_ID_16) {
         // Loop through all the bytes.
         while (unicodeIndex < len) {
             // Move the 2nd byte to the low bits of the compressed unicode char.
-            *CS0 = (uint8)((*Buff) >> 8);
-            CS0++;
-            *CS0 = (uint8)(*Buff);
-            CS0++;
-            Buff++;
+            CS0[CS0Index++] = (uint8)(UName->Buffer[unicodeIndex] >> 8);
+            CS0[CS0Index++] = (uint8)UName->Buffer[unicodeIndex];
             unicodeIndex++;
         }
     } else {
         // Loop through all the bytes.
         while (unicodeIndex < len) {
-            *CS0 = (uint8)(*Buff);
-            CS0++;
-            Buff++;
+            CS0[CS0Index++] = (uint8)UName->Buffer[unicodeIndex];
             unicodeIndex++;
         }
     }
@@ -305,8 +293,8 @@ UDFSetUpTag(
     Tag->descCRC = UDFCrc((uint8*)(Tag + 1 + skip), DataLen - skip, (skip ? Tag->descCRC : 0));
     Tag->tagChecksum = 0;
     tb = ((int8*)Tag);
-    for (i=0; i<sizeof(tag); i++,tb++)
-        Tag->tagChecksum += (i!=4) ? (*tb) : 0;
+    for (i=0; i<sizeof(tag); i++)
+        Tag->tagChecksum += (i!=4) ? tb[i] : 0;
     AdPrint(
         ("UDF tag: descVersion=%x tagSerialNum=%x descCRCLength=%x descCRC=%x tagChecksum=%x\n", Tag->descVersion,
          Tag->tagSerialNum, Tag->descCRCLength, Tag->descCRC, Tag->tagChecksum));
@@ -5585,10 +5573,10 @@ UDFSetRecordedBlocks(
     Extent = FileInfo->Dloc->DataLoc.Mapping;
 
     if (Extent && AllocMode != ICB_FLAG_AD_IN_ICB) {
-        while (Extent->extLength) {
-            Total += ((Extent->extLength >> 30) == EXTENT_RECORDED_ALLOCATED) *
-                (((Extent->extLength & UDF_EXTENT_LENGTH_MASK) + Vcb->SectorSize - 1) >> Vcb->SectorShift);
-            Extent++;
+        for (uint32 i = 0; Extent[i].extLength; i++) {
+            Total += ((Extent[i].extLength >> 30) == EXTENT_RECORDED_ALLOCATED) *
+                (((Extent[i].extLength & UDF_EXTENT_LENGTH_MASK) + Vcb->SectorSize - 1) >>
+                 Vcb->SectorShift);
         }
     }
 
@@ -6363,9 +6351,9 @@ crc32(
     uint32 i;
     uint32 crc32val = 0;
 
-    for(i=0; i<len; i++, s++) {
+    for(i=0; i<len; i++) {
         crc32val =
-            crc32_tab[(crc32val ^ (*s)) & 0xff] ^ (crc32val >> 8);
+            crc32_tab[(crc32val ^ s[i]) & 0xff] ^ (crc32val >> 8);
     }
     return crc32val;
 } // end crc32()
@@ -6384,8 +6372,8 @@ UDFCrc(
     IN uint16 Crc
     )
 {
-    while (Size--)
-        Crc = CrcTable[(Crc >> 8 ^ *Data++) & 0xff] ^ (Crc << 8);
+    for (SIZE_T i = 0; i < Size; i++)
+        Crc = CrcTable[(Crc >> 8 ^ Data[i]) & 0xff] ^ (Crc << 8);
     return Crc;
 } // end UDFCrc()
 
@@ -6499,8 +6487,8 @@ UDFReadTagged(
         /* Verify the tag checksum */
         checksum = 0;
         tb = Buf;
-        for (i=0; i<sizeof(tag); i++, tb++)
-            checksum += (uint8)((i!=4) ? (*tb) : 0);
+        for (i=0; i<sizeof(tag); i++)
+            checksum += (uint8)((i!=4) ? tb[i] : 0);
 
         if (checksum != PTag->tagChecksum) {
             UDFPrint(("UDF: tag checksum failed block %x\n", Block));

@@ -367,8 +367,6 @@ UDFInsertPrefix(
                 Lcb->IgnoreCaseLinkName.MaximumLength = CaseFileName->Length;
                 RtlCopyMemory(NameBuffer, CaseFileName->Buffer, CaseFileName->Length);
 
-                // Move pointer to next position for ShortName
-                NameBuffer += CaseFileName->Length / sizeof(WCHAR);
             } else {
                 // No CaseFileName, position after FileName + padding
                 NameBuffer = (PWCHAR)((PUCHAR)Lcb->NameBuffer + FileName->Length + 0x18);
@@ -376,10 +374,12 @@ UDFInsertPrefix(
 
             // Copy ShortName (8.3 DOS name)
             if (ShortName != NULL && ShortName->Length > 0) {
-                Lcb->ShortName.Buffer = NameBuffer;
+                Lcb->ShortName.Buffer =
+                    (CaseFileName != NULL && CaseFileName->Length > 0) ?
+                    &NameBuffer[CaseFileName->Length / sizeof(WCHAR)] : NameBuffer;
                 Lcb->ShortName.Length = ShortName->Length;
                 Lcb->ShortName.MaximumLength = ShortName->Length;
-                RtlCopyMemory(NameBuffer, ShortName->Buffer, ShortName->Length);
+                RtlCopyMemory(Lcb->ShortName.Buffer, ShortName->Buffer, ShortName->Length);
 
                 // Set flag indicating short name was created
                 SetFlag(Lcb->Flags, UDF_LCB_FLAG_SHORT_NAME_CREATED);
@@ -657,7 +657,7 @@ UDFBuildFullPathFromLcb(
     USHORT TotalLength = 0;
     USHORT ComponentLength;
     _SEH2_VOLATILE PWCHAR Buffer = NULL;
-    PWCHAR CurrentPosition;
+    ULONG CurrentPositionIndex;
     PKTHREAD CurrentThread;
     _SEH2_VOLATILE BOOLEAN CacheLockAcquired = FALSE;
     _SEH2_VOLATILE NTSTATUS Status = STATUS_SUCCESS;
@@ -760,8 +760,8 @@ UDFBuildFullPathFromLcb(
         }
 
         // Build path backwards (from end to beginning)
-        CurrentPosition = (PWCHAR)((PUCHAR)Buffer + TotalLength);
-        *CurrentPosition = 0; // Null terminator
+        CurrentPositionIndex = TotalLength / sizeof(WCHAR);
+        Buffer[CurrentPositionIndex] = 0; // Null terminator
 
         // Walk up chain again and copy names
         CurrentLcb = Lcb;
@@ -782,11 +782,12 @@ UDFBuildFullPathFromLcb(
                 // front of it. (Writing the separator after the name would
                 // produce "<component>\" with no leading backslash — a
                 // relative, malformed path that no registered notify matches.)
-                CurrentPosition -= (ComponentName->Length / sizeof(WCHAR));
-                RtlCopyMemory(CurrentPosition, ComponentName->Buffer, ComponentName->Length);
+                CurrentPositionIndex -= (ComponentName->Length / sizeof(WCHAR));
+                RtlCopyMemory(&Buffer[CurrentPositionIndex],
+                              ComponentName->Buffer, ComponentName->Length);
 
-                CurrentPosition--;
-                *CurrentPosition = L'\\';
+                CurrentPositionIndex--;
+                Buffer[CurrentPositionIndex] = L'\\';
             }
 
             // Move to parent
@@ -805,20 +806,21 @@ UDFBuildFullPathFromLcb(
         }
 
         // Add leading backslash if not already there
-        if (CurrentPosition > Buffer) {
-            CurrentPosition--;
-            *CurrentPosition = L'\\';
+        if (CurrentPositionIndex > 0) {
+            CurrentPositionIndex--;
+            Buffer[CurrentPositionIndex] = L'\\';
         }
 
         // Set output string
         FullPath->Buffer = Buffer;
-        FullPath->Length = (USHORT)((PUCHAR)Buffer + TotalLength - (PUCHAR)CurrentPosition);
+        FullPath->Length = (USHORT)((TotalLength / sizeof(WCHAR) -
+                                     CurrentPositionIndex) * sizeof(WCHAR));
         FullPath->MaximumLength = TotalLength + sizeof(WCHAR);
 
         // Move string to beginning of buffer if needed
-        if (CurrentPosition != Buffer) {
-            RtlMoveMemory(Buffer, CurrentPosition, FullPath->Length + sizeof(WCHAR));
-            FullPath->Length = (USHORT)((PUCHAR)Buffer + TotalLength - (PUCHAR)CurrentPosition);
+        if (CurrentPositionIndex != 0) {
+            RtlMoveMemory(Buffer, &Buffer[CurrentPositionIndex],
+                          FullPath->Length + sizeof(WCHAR));
         }
 
         // Optionally cache the path in LCB
@@ -997,6 +999,7 @@ UDFFindPathPrefix(
     PLCB CurrentLcb = NULL;
     PLCB MatchLcb;
     UNICODE_STRING LocalRemainingName;
+    ULONG RemainingOffset = 0;
     UNICODE_STRING ComponentName;
     WCHAR UpcaseBuffer[256];
     UNICODE_STRING UpcaseName;
@@ -1021,8 +1024,8 @@ UDFFindPathPrefix(
 
         // Skip leading backslashes
         while (LocalRemainingName.Length >= sizeof(WCHAR) &&
-               LocalRemainingName.Buffer[0] == L'\\') {
-            LocalRemainingName.Buffer++;
+               LocalRemainingName.Buffer[RemainingOffset] == L'\\') {
+            RemainingOffset++;
             LocalRemainingName.Length -= sizeof(WCHAR);
         }
 
@@ -1031,12 +1034,12 @@ UDFFindPathPrefix(
         }
 
         // Stop at stream boundary
-        if (LocalRemainingName.Buffer[0] == L':') {
+        if (LocalRemainingName.Buffer[RemainingOffset] == L':') {
             return CurrentLcb;
         }
 
         // Extract next component (up to next '\' or ':' or end)
-        ComponentName.Buffer = LocalRemainingName.Buffer;
+        ComponentName.Buffer = &LocalRemainingName.Buffer[RemainingOffset];
         ComponentName.Length = 0;
         while (ComponentName.Length < LocalRemainingName.Length) {
             WCHAR ch = ComponentName.Buffer[ComponentName.Length / sizeof(WCHAR)];
@@ -1051,7 +1054,7 @@ UDFFindPathPrefix(
         ComponentName.MaximumLength = ComponentName.Length;
 
         // Advance local remaining name past this component
-        LocalRemainingName.Buffer += ComponentName.Length / sizeof(WCHAR);
+        RemainingOffset += ComponentName.Length / sizeof(WCHAR);
         LocalRemainingName.Length -= ComponentName.Length;
 
         //

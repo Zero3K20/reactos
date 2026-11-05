@@ -846,7 +846,7 @@ UDFPrepareBuffers(
             break;
         }
 
-        ThisIoRun = IoRuns + *RunCount;
+        ThisIoRun = &IoRuns[*RunCount];
         CurrentUserBuffer = Add2Ptr(CurrentUserBuffer, CurrentByteCount, PVOID);
         CurrentUserBufferOffset += CurrentByteCount;
         CurrentFileOffset += CurrentByteCount;
@@ -881,9 +881,9 @@ UDFFinishBuffers(
 {
     BOOLEAN FlushIoBuffers = FALSE;
     ULONG RemainingEntries = RunCount;
-    PIO_RUN ThisIoRun = &IoRuns[RunCount - 1];
 
     while (RemainingEntries != 0) {
+        PIO_RUN ThisIoRun = &IoRuns[RemainingEntries - 1];
 
         //
         //  Handle unaligned transfers (TransferByteCount != 0).
@@ -948,7 +948,6 @@ UDFFinishBuffers(
             IoFreeIrp(ThisIoRun->SavedIrp);
         }
 
-        ThisIoRun -= 1;
         RemainingEntries -= 1;
     }
 
