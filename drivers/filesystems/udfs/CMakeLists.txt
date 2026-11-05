@@ -1,6 +1,8 @@
 
 include_directories(Include)
 
+option(UDFS_FUNCTION_TIMING "Print execution time for every UDFS function" OFF)
+
 list(APPEND SOURCE
     udf_info/alloc.c
     udf_info/dirtree.c
@@ -49,6 +51,15 @@ list(APPEND SOURCE
 add_library(udfs MODULE ${SOURCE} udffs.rc)
 
 target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
+
+if(UDFS_FUNCTION_TIMING)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        target_compile_definitions(udfs PRIVATE UDF_FUNCTION_TIMING)
+        target_compile_options(udfs PRIVATE -finstrument-functions)
+    else()
+        message(FATAL_ERROR "UDFS_FUNCTION_TIMING requires GCC or Clang")
+    endif()
+endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)

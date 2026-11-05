@@ -33,37 +33,11 @@
 //#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
-//#define USE_FUNCTION_TIMING
+// Configure with -DUDFS_FUNCTION_TIMING=ON to time every function.
 
 //======================================
 
 #if defined UDF_DBG
-
-#ifdef USE_FUNCTION_TIMING
-/* Pair these macros at function entry and before each return. */
-#define UDF_FUNCTION_TIMING_START() \
-    LARGE_INTEGER UdfFunctionTimingFrequency; \
-    LARGE_INTEGER UdfFunctionTimingStart = KeQueryPerformanceCounter(&UdfFunctionTimingFrequency)
-#define UDF_FUNCTION_TIMING_END() \
-    do { \
-        LARGE_INTEGER UdfFunctionTimingEnd = KeQueryPerformanceCounter(NULL); \
-        ULONGLONG UdfFunctionTimingElapsedMs = 0; \
-        if (UdfFunctionTimingFrequency.QuadPart > 0 && \
-            UdfFunctionTimingEnd.QuadPart >= UdfFunctionTimingStart.QuadPart) { \
-            ULONGLONG UdfFunctionTimingTicks = UdfFunctionTimingEnd.QuadPart - \
-                                               UdfFunctionTimingStart.QuadPart; \
-            ULONGLONG UdfFunctionTimingFrequencyValue = UdfFunctionTimingFrequency.QuadPart; \
-            UdfFunctionTimingElapsedMs = \
-                (UdfFunctionTimingTicks / UdfFunctionTimingFrequencyValue) * 1000 + \
-                ((UdfFunctionTimingTicks % UdfFunctionTimingFrequencyValue) * 1000) / \
-                    UdfFunctionTimingFrequencyValue; \
-        } \
-        UDFPrint(("UDF: %s took %I64u ms\n", __FUNCTION__, UdfFunctionTimingElapsedMs)); \
-    } while (0)
-#else
-#define UDF_FUNCTION_TIMING_START() ((void)0)
-#define UDF_FUNCTION_TIMING_END() ((void)0)
-#endif
 
   ULONG
   _cdecl
