@@ -263,6 +263,17 @@ udf_calculate_disc_layout(int format_flags, int min_udf,
 	align_blockingnr = blockingnr;
 	if (format_flags & (FORMAT_SPARABLE | FORMAT_META))
 		align_blockingnr = sparable_blockingnr;
+	if (udf_physical_alignment > 1) {
+		uint32_t a = align_blockingnr, b = udf_physical_alignment;
+		while (b) {
+			uint32_t remainder = a % b;
+			a = b;
+			b = remainder;
+		}
+		if ((uint64_t)align_blockingnr / a * udf_physical_alignment > UINT32_MAX)
+			return EINVAL;
+		align_blockingnr = align_blockingnr / a * udf_physical_alignment;
+	}
 
 	layout.align_blockingnr    = align_blockingnr;
 	layout.sparable_blockingnr = sparable_blockingnr;
@@ -337,7 +348,9 @@ udf_calculate_disc_layout(int format_flags, int min_udf,
 		layout.meta_file   = pos++;
 		layout.meta_bitmap = pos++;
 		layout.meta_mirror = layout.part_size_lba-1;
-		layout.meta_alignment  = MAX(blockingnr, sparable_blockingnr);
+		layout.meta_alignment  = align_blockingnr;
+		if (layout.meta_alignment > UINT16_MAX)
+			return EINVAL;
 		layout.meta_blockingnr = MAX(layout.meta_alignment, 32);
 
 		/* calculate our partition length and store in sectors */
