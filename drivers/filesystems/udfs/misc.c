@@ -1730,6 +1730,12 @@ Return Value:
 {
     BOOLEAN Wait = FALSE;
     BOOLEAN Acquired;
+#ifdef UDF_FUNCTION_TIMING
+    LARGE_INTEGER ResourceAcquireStart;
+    LARGE_INTEGER ResourceAcquireEnd;
+    LARGE_INTEGER ResourceAcquireFrequency;
+    ULONGLONG ResourceAcquireElapsedUs;
+#endif
     PAGED_CODE();
 
     //  We look first at the IgnoreWait flag, next at the flag in the Irp
@@ -1742,6 +1748,11 @@ Return Value:
 
     // Attempt to acquire the resource either shared or exclusively.
 
+#ifdef UDF_FUNCTION_TIMING
+    if (Wait) {
+        ResourceAcquireStart = KeQueryPerformanceCounter(NULL);
+    }
+#endif
     switch (Type) {
         case AcquireExclusive:
 
@@ -1763,6 +1774,34 @@ Return Value:
             Acquired = FALSE;
             NT_ASSERT( FALSE );
     }
+
+#ifdef UDF_FUNCTION_TIMING
+    if (Wait) {
+        ResourceAcquireEnd = KeQueryPerformanceCounter(&ResourceAcquireFrequency);
+        ResourceAcquireElapsedUs = 0;
+        if (ResourceAcquireFrequency.QuadPart > 0 &&
+            ResourceAcquireEnd.QuadPart >= ResourceAcquireStart.QuadPart) {
+            ULONGLONG ResourceAcquireTicks =
+                ResourceAcquireEnd.QuadPart - ResourceAcquireStart.QuadPart;
+            ULONGLONG ResourceAcquireFrequencyValue =
+                ResourceAcquireFrequency.QuadPart;
+            ResourceAcquireElapsedUs =
+                (ResourceAcquireTicks / ResourceAcquireFrequencyValue) * 1000000 +
+                ((ResourceAcquireTicks % ResourceAcquireFrequencyValue) * 1000000) /
+                    ResourceAcquireFrequencyValue;
+        }
+        if (ResourceAcquireElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) {
+            const char* AcquireMode =
+                Type == AcquireExclusive ? "exclusive" :
+                Type == AcquireShared ? "shared" : "shared-starve-exclusive";
+            DbgPrint("UDF lock wait: resource=%p mode=%s acquired=%u took %I64u us\n",
+                     Resource,
+                     AcquireMode,
+                     (ULONG)Acquired,
+                     ResourceAcquireElapsedUs);
+        }
+    }
+#endif
 
     // If not acquired and the user didn't specifiy IgnoreWait then
     // raise CANT_WAIT.
@@ -1855,4 +1894,3 @@ UDFWaitForIoAtEof(
 }
 
 #include "Include/regtools.c"
-

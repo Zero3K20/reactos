@@ -110,6 +110,13 @@ UDFSendSectorIoChunk(
     PIRP Irp;
     PIO_STACK_LOCATION IrpSp;
     NTSTATUS Status;
+#ifdef UDF_FUNCTION_TIMING
+    LARGE_INTEGER IoStart;
+    LARGE_INTEGER IoEnd;
+    LARGE_INTEGER IoFrequency;
+    ULONGLONG IoElapsedUs;
+    BOOLEAN IoPending;
+#endif
 
     PAGED_CODE();
 
@@ -144,9 +151,16 @@ UDFSendSectorIoChunk(
         SetFlag(IrpSp->Flags, SL_WRITE_THROUGH);
     }
 
+#ifdef UDF_FUNCTION_TIMING
+    IoStart = KeQueryPerformanceCounter(NULL);
+    IoPending = FALSE;
+#endif
     Status = IoCallDriver(TargetDeviceObject, Irp);
 
     if (Status == STATUS_PENDING) {
+#ifdef UDF_FUNCTION_TIMING
+        IoPending = TRUE;
+#endif
         KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
         Status = Irp->IoStatus.Status;
     }
@@ -159,6 +173,27 @@ UDFSendSectorIoChunk(
         Status = NT_SUCCESS(Irp->IoStatus.Status) ?
                  STATUS_IO_DEVICE_ERROR : Irp->IoStatus.Status;
     }
+
+#ifdef UDF_FUNCTION_TIMING
+    IoEnd = KeQueryPerformanceCounter(&IoFrequency);
+    IoElapsedUs = 0;
+    if (IoFrequency.QuadPart > 0 && IoEnd.QuadPart >= IoStart.QuadPart) {
+        ULONGLONG IoTicks = IoEnd.QuadPart - IoStart.QuadPart;
+        ULONGLONG IoFrequencyValue = IoFrequency.QuadPart;
+        IoElapsedUs =
+            (IoTicks / IoFrequencyValue) * 1000000 +
+            ((IoTicks % IoFrequencyValue) * 1000000) / IoFrequencyValue;
+    }
+    if (IoElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) {
+        DbgPrint("UDF disk I/O: %s offset=%I64d bytes=%lu status=0x%08lx pending=%u took %I64u us\n",
+                 IsWrite ? "write" : "read",
+                 Offset,
+                 ByteCount,
+                 Status,
+                 (ULONG)IoPending,
+                 IoElapsedUs);
+    }
+#endif
 
     //  Free MDL chain.
 
