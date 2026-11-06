@@ -203,12 +203,13 @@ UDFSendSectorIo(
     ULONG ChunkLen = 0;
     NTSTATUS Status = STATUS_SUCCESS;
 
+    UDF_FUNCTION_TIMING_START();
     while (ByteCount > 0) {
         ChunkLen = min(ByteCount, UDF_MAX_SECTOR_IO_BYTES);
         Status = UDFSendSectorIoChunk(IrpContext, TargetDeviceObject, BufPtr, ChunkLen, Offset, IsWrite);
         
         if (!NT_SUCCESS(Status)) {
-
+            UDF_FUNCTION_TIMING_END("UDFSendSectorIo");
             return Status;
         }
         
@@ -217,6 +218,7 @@ UDFSendSectorIo(
         ByteCount -= ChunkLen;
     }
 
+    UDF_FUNCTION_TIMING_END("UDFSendSectorIo");
     return Status;
 } // end UDFSendSectorIo()
 
@@ -1316,14 +1318,22 @@ UDFWriteData(
     NTSTATUS status;
     SIZE_T _WrittenBytes;
 
+    UDF_FUNCTION_TIMING_START();
     *WrittenBytes = 0;
-    if (!Length) return STATUS_SUCCESS;
-    if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
+    if (!Length) {
+        UDF_FUNCTION_TIMING_END("UDFWriteData");
+        return STATUS_SUCCESS;
+    }
+    if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD) {
+        UDF_FUNCTION_TIMING_END("UDFWriteData");
         return STATUS_NO_SUCH_DEVICE;
+    }
 
     status = UDFOpenIntegrityForWrite(IrpContext, Vcb, Direct);
-    if (!NT_SUCCESS(status))
+    if (!NT_SUCCESS(status)) {
+        UDF_FUNCTION_TIMING_END("UDFWriteData");
         return status;
+    }
 
     if (Vcb->CDR_Mode) {
         Lba = (uint32)(Offset >> BSh);
@@ -1337,9 +1347,15 @@ UDFWriteData(
     if ((i = ((uint32)Offset & (BS - 1)))) {
         l = min(BS - i, (uint32)Length);
         status = UDFWriteInSector(IrpContext, Vcb, Lba, i, l, Buffer, WrittenBytes);
-        if (!NT_SUCCESS(status)) return status;
+        if (!NT_SUCCESS(status)) {
+            UDF_FUNCTION_TIMING_END("UDFWriteData");
+            return status;
+        }
         Length -= l;
-        if (!Length) return STATUS_SUCCESS;
+        if (!Length) {
+            UDF_FUNCTION_TIMING_END("UDFWriteData");
+            return STATUS_SUCCESS;
+        }
         Lba++;
         Buffer += l;
     }
@@ -1354,17 +1370,24 @@ UDFWriteData(
 
         _WrittenBytes = NT_SUCCESS(status) ? AlignedBytes : 0;
         *WrittenBytes += _WrittenBytes;
-        if (!NT_SUCCESS(status)) return status;
+        if (!NT_SUCCESS(status)) {
+            UDF_FUNCTION_TIMING_END("UDFWriteData");
+            return status;
+        }
 
         Lba += AlignedBytes >> BSh;
         Buffer += AlignedBytes;
         Length -= AlignedBytes;
     }
 
-    if (!Length) return STATUS_SUCCESS;
+    if (!Length) {
+        UDF_FUNCTION_TIMING_END("UDFWriteData");
+        return STATUS_SUCCESS;
+    }
 
     status = UDFWriteInSector(IrpContext, Vcb, Lba, 0, (uint32)Length, Buffer, &_WrittenBytes);
     *WrittenBytes += _WrittenBytes;
 
+    UDF_FUNCTION_TIMING_END("UDFWriteData");
     return status;
 } // end UDFWriteData()
