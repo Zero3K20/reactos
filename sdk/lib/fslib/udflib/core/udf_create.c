@@ -284,9 +284,9 @@ udf_calculate_disc_layout(int format_flags, int min_udf,
 #endif
 
 		first_lba = UDF_ROUNDUP( first_lba - wrtrack_skew,
-				align_blockingnr);
+				align_blockingnr) + wrtrack_skew;
 		last_lba  = UDF_ROUNDDOWN(last_lba - wrtrack_skew,
-				align_blockingnr);
+				align_blockingnr) + wrtrack_skew;
 	}
 
 	if ((format_flags & FORMAT_SPARABLE) == 0)
