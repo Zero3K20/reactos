@@ -114,11 +114,20 @@ UDFSendSectorIoChunk(
     LARGE_INTEGER IoStart;
     LARGE_INTEGER IoEnd;
     LARGE_INTEGER IoFrequency;
+    LARGE_INTEGER IoSystemTime;
+    TIME_FIELDS IoTimeFields;
     ULONGLONG IoElapsedUs;
     BOOLEAN IoPending;
+    HANDLE IoThreadId;
+    PVOID IoCaller;
 #endif
 
     PAGED_CODE();
+
+#ifdef UDF_FUNCTION_TIMING
+    IoThreadId = PsGetCurrentThreadId();
+    IoCaller = UDF_TRACE_CALLER();
+#endif
 
     ROffset.QuadPart = Offset;
 
@@ -185,7 +194,18 @@ UDFSendSectorIoChunk(
             ((IoTicks % IoFrequencyValue) * 1000000) / IoFrequencyValue;
     }
     if (IoElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) {
-        DbgPrint("UDF disk I/O: %s offset=%I64d bytes=%lu status=0x%08lx pending=%u took %I64u us\n",
+        KeQuerySystemTime(&IoSystemTime);
+        RtlTimeToTimeFields(&IoSystemTime, &IoTimeFields);
+        DbgPrint("UDF disk I/O: %04u-%02u-%02uT%02u:%02u:%02u.%03uZ thread=%p caller=%p %s offset=%I64d bytes=%lu status=0x%08lx pending=%u took %I64u us\n",
+                 (ULONG)IoTimeFields.Year,
+                 (ULONG)IoTimeFields.Month,
+                 (ULONG)IoTimeFields.Day,
+                 (ULONG)IoTimeFields.Hour,
+                 (ULONG)IoTimeFields.Minute,
+                 (ULONG)IoTimeFields.Second,
+                 (ULONG)IoTimeFields.Milliseconds,
+                 IoThreadId,
+                 IoCaller,
                  IsWrite ? "write" : "read",
                  Offset,
                  ByteCount,

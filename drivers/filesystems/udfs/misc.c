@@ -1734,7 +1734,11 @@ Return Value:
     LARGE_INTEGER ResourceAcquireStart;
     LARGE_INTEGER ResourceAcquireEnd;
     LARGE_INTEGER ResourceAcquireFrequency;
+    LARGE_INTEGER ResourceAcquireSystemTime;
+    TIME_FIELDS ResourceAcquireTimeFields;
     ULONGLONG ResourceAcquireElapsedUs;
+    HANDLE ResourceAcquireThreadId;
+    PVOID ResourceAcquireCaller;
 #endif
     PAGED_CODE();
 
@@ -1751,6 +1755,8 @@ Return Value:
 #ifdef UDF_FUNCTION_TIMING
     if (Wait) {
         ResourceAcquireStart = KeQueryPerformanceCounter(NULL);
+        ResourceAcquireThreadId = PsGetCurrentThreadId();
+        ResourceAcquireCaller = UDF_TRACE_CALLER();
     }
 #endif
     switch (Type) {
@@ -1794,7 +1800,19 @@ Return Value:
             const char* AcquireMode =
                 Type == AcquireExclusive ? "exclusive" :
                 Type == AcquireShared ? "shared" : "shared-starve-exclusive";
-            DbgPrint("UDF lock wait: resource=%p mode=%s acquired=%u took %I64u us\n",
+            KeQuerySystemTime(&ResourceAcquireSystemTime);
+            RtlTimeToTimeFields(&ResourceAcquireSystemTime,
+                                &ResourceAcquireTimeFields);
+            DbgPrint("UDF lock wait: %04u-%02u-%02uT%02u:%02u:%02u.%03uZ thread=%p caller=%p resource=%p mode=%s acquired=%u took %I64u us\n",
+                     (ULONG)ResourceAcquireTimeFields.Year,
+                     (ULONG)ResourceAcquireTimeFields.Month,
+                     (ULONG)ResourceAcquireTimeFields.Day,
+                     (ULONG)ResourceAcquireTimeFields.Hour,
+                     (ULONG)ResourceAcquireTimeFields.Minute,
+                     (ULONG)ResourceAcquireTimeFields.Second,
+                     (ULONG)ResourceAcquireTimeFields.Milliseconds,
+                     ResourceAcquireThreadId,
+                     ResourceAcquireCaller,
                      Resource,
                      AcquireMode,
                      (ULONG)Acquired,

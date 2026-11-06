@@ -47,11 +47,22 @@ DbgPrint(
     ...
     );
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#define UDF_TRACE_CALLER() _ReturnAddress()
+#else
+#define UDF_TRACE_CALLER() __builtin_return_address(0)
+#endif
+
 #define UDF_FUNCTION_TIMING_START() \
-    LARGE_INTEGER UdfFunctionTimingStart = KeQueryPerformanceCounter(NULL)
+    LARGE_INTEGER UdfFunctionTimingStart = KeQueryPerformanceCounter(NULL); \
+    HANDLE UdfFunctionTimingThreadId = PsGetCurrentThreadId(); \
+    PVOID UdfFunctionTimingCaller = UDF_TRACE_CALLER()
 #define UDF_FUNCTION_TIMING_END(_FunctionName) do { \
     LARGE_INTEGER UdfFunctionTimingFrequency; \
     LARGE_INTEGER UdfFunctionTimingEnd = KeQueryPerformanceCounter(&UdfFunctionTimingFrequency); \
+    LARGE_INTEGER UdfFunctionTimingSystemTime; \
+    TIME_FIELDS UdfFunctionTimingTimeFields; \
     ULONGLONG UdfFunctionTimingElapsedUs = 0; \
     if (UdfFunctionTimingFrequency.QuadPart > 0 && \
         UdfFunctionTimingEnd.QuadPart >= UdfFunctionTimingStart.QuadPart) { \
@@ -62,8 +73,22 @@ DbgPrint(
             ((UdfFunctionTimingTicks % UdfFunctionTimingFrequencyValue) * 1000000) / \
                 UdfFunctionTimingFrequencyValue; \
     } \
-    if (UdfFunctionTimingElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) \
-        DbgPrint("UDF timing: %s took %I64u us\n", _FunctionName, UdfFunctionTimingElapsedUs); \
+    if (UdfFunctionTimingElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) { \
+        KeQuerySystemTime(&UdfFunctionTimingSystemTime); \
+        RtlTimeToTimeFields(&UdfFunctionTimingSystemTime, &UdfFunctionTimingTimeFields); \
+        DbgPrint("UDF timing: %04u-%02u-%02uT%02u:%02u:%02u.%03uZ thread=%p caller=%p %s took %I64u us\n", \
+                 (ULONG)UdfFunctionTimingTimeFields.Year, \
+                 (ULONG)UdfFunctionTimingTimeFields.Month, \
+                 (ULONG)UdfFunctionTimingTimeFields.Day, \
+                 (ULONG)UdfFunctionTimingTimeFields.Hour, \
+                 (ULONG)UdfFunctionTimingTimeFields.Minute, \
+                 (ULONG)UdfFunctionTimingTimeFields.Second, \
+                 (ULONG)UdfFunctionTimingTimeFields.Milliseconds, \
+                 UdfFunctionTimingThreadId, \
+                 UdfFunctionTimingCaller, \
+                 _FunctionName, \
+                 UdfFunctionTimingElapsedUs); \
+    } \
 } while (0)
 #else
 #define UDF_FUNCTION_TIMING_START() ((void)0)
