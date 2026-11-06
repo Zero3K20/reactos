@@ -1734,11 +1734,17 @@ Return Value:
     LARGE_INTEGER ResourceAcquireStart;
     LARGE_INTEGER ResourceAcquireEnd;
     LARGE_INTEGER ResourceAcquireFrequency;
-    LARGE_INTEGER ResourceAcquireSystemTime;
-    TIME_FIELDS ResourceAcquireTimeFields;
+    LARGE_INTEGER ResourceAcquireStartTime;
+    LARGE_INTEGER ResourceAcquireEndTime;
+    TIME_FIELDS ResourceAcquireStartFields;
+    TIME_FIELDS ResourceAcquireEndFields;
     ULONGLONG ResourceAcquireElapsedUs;
     HANDLE ResourceAcquireThreadId;
     PVOID ResourceAcquireCaller;
+    PVOID ResourceAcquireOwner;
+    PVOID ResourceAcquireStack[8];
+    USHORT ResourceAcquireFrameCount;
+    ULONG ResourceAcquireFrame;
 #endif
     PAGED_CODE();
 
@@ -1755,8 +1761,11 @@ Return Value:
 #ifdef UDF_FUNCTION_TIMING
     if (Wait) {
         ResourceAcquireStart = KeQueryPerformanceCounter(NULL);
+        KeQuerySystemTime(&ResourceAcquireStartTime);
         ResourceAcquireThreadId = PsGetCurrentThreadId();
         ResourceAcquireCaller = UDF_TRACE_CALLER();
+        ResourceAcquireOwner =
+            (PVOID)Resource->OwnerEntry.OwnerThread;
     }
 #endif
     switch (Type) {
@@ -1800,23 +1809,47 @@ Return Value:
             const char* AcquireMode =
                 Type == AcquireExclusive ? "exclusive" :
                 Type == AcquireShared ? "shared" : "shared-starve-exclusive";
-            KeQuerySystemTime(&ResourceAcquireSystemTime);
-            RtlTimeToTimeFields(&ResourceAcquireSystemTime,
-                                &ResourceAcquireTimeFields);
-            DbgPrint("UDF lock wait: %04u-%02u-%02uT%02u:%02u:%02u.%03uZ thread=%p caller=%p resource=%p mode=%s acquired=%u took %I64u us\n",
-                     (ULONG)ResourceAcquireTimeFields.Year,
-                     (ULONG)ResourceAcquireTimeFields.Month,
-                     (ULONG)ResourceAcquireTimeFields.Day,
-                     (ULONG)ResourceAcquireTimeFields.Hour,
-                     (ULONG)ResourceAcquireTimeFields.Minute,
-                     (ULONG)ResourceAcquireTimeFields.Second,
-                     (ULONG)ResourceAcquireTimeFields.Milliseconds,
+            KeQuerySystemTime(&ResourceAcquireEndTime);
+            RtlTimeToTimeFields(&ResourceAcquireStartTime,
+                                &ResourceAcquireStartFields);
+            RtlTimeToTimeFields(&ResourceAcquireEndTime,
+                                &ResourceAcquireEndFields);
+            DbgPrint("UDF lock wait: thread=%p caller=%p ownerSnapshot=%p resource=%p mode=%s acquired=%u start=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ end=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ took %I64u us\n",
                      ResourceAcquireThreadId,
                      ResourceAcquireCaller,
+                     ResourceAcquireOwner,
                      Resource,
                      AcquireMode,
                      (ULONG)Acquired,
+                     (ULONG)ResourceAcquireStartFields.Year,
+                     (ULONG)ResourceAcquireStartFields.Month,
+                     (ULONG)ResourceAcquireStartFields.Day,
+                     (ULONG)ResourceAcquireStartFields.Hour,
+                     (ULONG)ResourceAcquireStartFields.Minute,
+                     (ULONG)ResourceAcquireStartFields.Second,
+                     (ULONG)ResourceAcquireStartFields.Milliseconds,
+                     (ULONG)ResourceAcquireEndFields.Year,
+                     (ULONG)ResourceAcquireEndFields.Month,
+                     (ULONG)ResourceAcquireEndFields.Day,
+                     (ULONG)ResourceAcquireEndFields.Hour,
+                     (ULONG)ResourceAcquireEndFields.Minute,
+                     (ULONG)ResourceAcquireEndFields.Second,
+                     (ULONG)ResourceAcquireEndFields.Milliseconds,
                      ResourceAcquireElapsedUs);
+
+            ResourceAcquireFrameCount = RtlCaptureStackBackTrace(
+                0,
+                RTL_NUMBER_OF(ResourceAcquireStack),
+                ResourceAcquireStack,
+                NULL);
+            for (ResourceAcquireFrame = 0;
+                 ResourceAcquireFrame < ResourceAcquireFrameCount;
+                 ResourceAcquireFrame++) {
+                DbgPrint("UDF lock wait stack: thread=%p frame=%lu address=%p\n",
+                         ResourceAcquireThreadId,
+                         ResourceAcquireFrame,
+                         ResourceAcquireStack[ResourceAcquireFrame]);
+            }
         }
     }
 #endif
