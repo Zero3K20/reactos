@@ -33,6 +33,7 @@
 //#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
+// Configure with -DUDFS_FUNCTION_TIMING=ON to time every function.
 
 //======================================
 
