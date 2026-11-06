@@ -1173,6 +1173,19 @@ UDFBarrierFlushDevice(IN PDEVICE_OBJECT TargetDeviceObject)
     KEVENT event;
     PIRP irp;
     NTSTATUS status;
+#ifdef UDF_FUNCTION_TIMING
+    LARGE_INTEGER FlushStart;
+    LARGE_INTEGER FlushEnd;
+    LARGE_INTEGER FlushFrequency;
+    LARGE_INTEGER FlushStartTime;
+    LARGE_INTEGER FlushEndTime;
+    TIME_FIELDS FlushStartFields;
+    TIME_FIELDS FlushEndFields;
+    ULONGLONG FlushElapsedUs;
+    HANDLE FlushThreadId;
+    PVOID FlushCaller;
+    BOOLEAN FlushPending;
+#endif
 
     iosb.Status = STATUS_UNSUCCESSFUL;
     iosb.Information = 0;
@@ -1182,13 +1195,60 @@ UDFBarrierFlushDevice(IN PDEVICE_OBJECT TargetDeviceObject)
                                        &event, &iosb);
     if (!irp)
         return STATUS_INSUFFICIENT_RESOURCES;
+#ifdef UDF_FUNCTION_TIMING
+    FlushStart = KeQueryPerformanceCounter(NULL);
+    KeQuerySystemTime(&FlushStartTime);
+    FlushThreadId = PsGetCurrentThreadId();
+    FlushCaller = UDF_TRACE_CALLER();
+    FlushPending = FALSE;
+#endif
     status = IoCallDriver(TargetDeviceObject, irp);
     if (status == STATUS_PENDING) {
+#ifdef UDF_FUNCTION_TIMING
+        FlushPending = TRUE;
+#endif
         KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
         status = iosb.Status;
     } else if (NT_SUCCESS(status)) {
         status = iosb.Status;
     }
+#ifdef UDF_FUNCTION_TIMING
+    FlushEnd = KeQueryPerformanceCounter(&FlushFrequency);
+    KeQuerySystemTime(&FlushEndTime);
+    FlushElapsedUs = 0;
+    if (FlushFrequency.QuadPart > 0 && FlushEnd.QuadPart >= FlushStart.QuadPart) {
+        ULONGLONG FlushTicks = FlushEnd.QuadPart - FlushStart.QuadPart;
+        ULONGLONG FlushFrequencyValue = FlushFrequency.QuadPart;
+        FlushElapsedUs =
+            (FlushTicks / FlushFrequencyValue) * 1000000 +
+            ((FlushTicks % FlushFrequencyValue) * 1000000) / FlushFrequencyValue;
+    }
+    if (FlushElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) {
+        RtlTimeToTimeFields(&FlushStartTime, &FlushStartFields);
+        RtlTimeToTimeFields(&FlushEndTime, &FlushEndFields);
+        DbgPrint("UDF barrier flush: thread=%p caller=%p device=%p pending=%u status=0x%08lx start=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ end=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ took %I64u us\n",
+                 FlushThreadId,
+                 FlushCaller,
+                 TargetDeviceObject,
+                 (ULONG)FlushPending,
+                 status,
+                 (ULONG)FlushStartFields.Year,
+                 (ULONG)FlushStartFields.Month,
+                 (ULONG)FlushStartFields.Day,
+                 (ULONG)FlushStartFields.Hour,
+                 (ULONG)FlushStartFields.Minute,
+                 (ULONG)FlushStartFields.Second,
+                 (ULONG)FlushStartFields.Milliseconds,
+                 (ULONG)FlushEndFields.Year,
+                 (ULONG)FlushEndFields.Month,
+                 (ULONG)FlushEndFields.Day,
+                 (ULONG)FlushEndFields.Hour,
+                 (ULONG)FlushEndFields.Minute,
+                 (ULONG)FlushEndFields.Second,
+                 (ULONG)FlushEndFields.Milliseconds,
+                 FlushElapsedUs);
+    }
+#endif
     return status;
 }
 
