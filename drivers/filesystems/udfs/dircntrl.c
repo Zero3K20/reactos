@@ -90,6 +90,7 @@ UDFCommonDirControl(
     PCCB                    Ccb = NULL;
     PVCB                    Vcb = NULL;
 
+    UDF_FUNCTION_TIMING_START();
     PAGED_CODE();
 
     TmPrint(("UDFCommonDirControl: \n"));
@@ -103,6 +104,7 @@ UDFCommonDirControl(
     if (UDFDecodeFileObject(FileObject, &Fcb, &Ccb) != UserDirectoryOpen) {
 
         UDFCompleteRequest( IrpContext, Irp, STATUS_INVALID_PARAMETER );
+        UDF_FUNCTION_TIMING_END("UDFCommonDirControl");
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -117,6 +119,7 @@ UDFCommonDirControl(
         !(Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        UDF_FUNCTION_TIMING_END("UDFCommonDirControl");
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -139,6 +142,7 @@ UDFCommonDirControl(
         break;
     }
 
+    UDF_FUNCTION_TIMING_END("UDFCommonDirControl");
     return(RC);
 } // end UDFCommonDirControl()
 

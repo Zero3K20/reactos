@@ -802,6 +802,7 @@ UDFUnlockCallersBuffer(
 {
     NTSTATUS            RC = STATUS_SUCCESS;
 
+    UDF_FUNCTION_TIMING_START();
     UDFPrint(("UDFUnlockCallersBuffer: \n"));
 
     ASSERT(Irp);
@@ -819,6 +820,7 @@ UDFUnlockCallersBuffer(
         NOTHING;
     } _SEH2_END;
 
+    UDF_FUNCTION_TIMING_END("UDFUnlockCallersBuffer");
     return(RC);
 } // end UDFUnlockCallersBuffer()
 

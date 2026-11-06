@@ -535,6 +535,7 @@ UDFSetFileSize(
     uint16 Ident;
 //    PDIR_INDEX_ITEM DirIndex;
 
+    UDF_FUNCTION_TIMING_START();
     ValidateFileInfo(FileInfo);
     AdPrint(("UDFSetFileSize: %I64x, FI %x\n", Size, FileInfo));
 
@@ -561,6 +562,7 @@ UDFSetFileSize(
         DirIndex->FileSize = Size;
     }*/
     //AdPrint(("UDFSetFileSize: ok\n"));
+    UDF_FUNCTION_TIMING_END("UDFSetFileSize");
     return;
 } // end UDFSetFileSize()
 
@@ -574,6 +576,7 @@ UDFSetFileSizeInDirNdx(
     uint16 Ident;
     PDIR_INDEX_ITEM DirIndex;
 
+    UDF_FUNCTION_TIMING_START();
     ValidateFileInfo(FileInfo);
     if (ASize) {
         AdPrint(("UDFSetFileSizeInDirNdx: %I64x\n", *ASize));
@@ -582,8 +585,10 @@ UDFSetFileSizeInDirNdx(
     }
 
     DirIndex = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index);
-    if (!DirIndex)
+    if (!DirIndex) {
+       UDF_FUNCTION_TIMING_END("UDFSetFileSizeInDirNdx");
        return;
+    }
 
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
     if (Ident == TID_FILE_ENTRY) {
@@ -603,6 +608,7 @@ UDFSetFileSizeInDirNdx(
 //            DirIndex->AllocationSize = (fe->informationLength + Vcb->LBlockSize - 1) & ~(Vcb->LBlockSize - 1);
         }
     }
+    UDF_FUNCTION_TIMING_END("UDFSetFileSizeInDirNdx");
     return;
 } // end UDFSetFileSizeInDirNdx()
 
@@ -1061,13 +1067,14 @@ UDFWriteFile__(
     int64 t, elen;
     NTSTATUS status;
     int8* OldInIcb = NULL;
-    ValidateFileInfo(FileInfo);
     SIZE_T _WrittenBytes;
     PUDF_DATALOC_INFO Dloc;
     // unwind staff
     BOOLEAN WasInIcb = FALSE;
     uint64 OldLen;
 
+    UDF_FUNCTION_TIMING_START();
+    ValidateFileInfo(FileInfo);
 //    ASSERT(FileInfo->RefCount >= 1);
 
     Dloc = FileInfo->Dloc;
@@ -1083,8 +1090,10 @@ UDFWriteFile__(
         BOOLEAN handled;
         status = UDFTryDirectoryAppend(IrpContext, Vcb, FileInfo, Offset,
                                       Length, Direct, Buffer, WrittenBytes, &handled);
-        if (!NT_SUCCESS(status) || handled)
+        if (!NT_SUCCESS(status) || handled) {
+            UDF_FUNCTION_TIMING_END("UDFWriteFile__");
             return status;
+        }
     }
 
     AdPrint(("UDFWriteFile__ FE %x, FileInfo %x, ExtInfo %x, Mapping %x\n",
@@ -1096,6 +1105,7 @@ UDFWriteFile__(
         // write Alloc-Rec area
         ExtPrint(("  WAlloc-Rec: %I64x <= %I64x\n", t, Dloc->DataLoc.Length));
         status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
+        UDF_FUNCTION_TIMING_END("UDFWriteFile__");
         return status;
     }
     elen = UDFGetExtentLength(Dloc->DataLoc.Mapping);
@@ -1110,19 +1120,28 @@ UDFWriteFile__(
         UDFSetFileSize(FileInfo, t);
         Dloc->DataLoc.Modified = TRUE;
         Dloc->DataLoc.Length = t;
-        return UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
+        status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
+        UDF_FUNCTION_TIMING_END("UDFWriteFile__");
+        return status;
     }
     // We should not get here if Direct=TRUE
-    if (Direct) return STATUS_INVALID_PARAMETER;
+    if (Direct) {
+        UDF_FUNCTION_TIMING_END("UDFWriteFile__");
+        return STATUS_INVALID_PARAMETER;
+    }
     OldLen = Dloc->DataLoc.Length;
     if (Dloc->DataLoc.Offset && Dloc->DataLoc.Length) {
         // read in-icb data. it'll be replaced after resize
         ExtPrint(("  read in-icb data\n"));
         OldInIcb = (int8*)MyAllocatePool__(NonPagedPool, (uint32)(Dloc->DataLoc.Length));
-        if (!OldInIcb) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!OldInIcb) {
+            UDF_FUNCTION_TIMING_END("UDFWriteFile__");
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         status = UDFReadFile__(IrpContext, Vcb, FileInfo, 0, (uint32)OldLen, FALSE, OldInIcb);
         if (!NT_SUCCESS(status)) {
             MyFreePool__(OldInIcb);
+            UDF_FUNCTION_TIMING_END("UDFWriteFile__");
             return status;
         }
     }
@@ -1171,6 +1190,7 @@ UDFWriteFile__(
             UDFResizeExtent(IrpContext, Vcb, DataPartNum, OldLen, FALSE, &Dloc->DataLoc);
             FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_CUT_PREALLOCATED;
         }
+        UDF_FUNCTION_TIMING_END("UDFWriteFile__");
         return status;
     }
     if (OldInIcb) {
@@ -1178,18 +1198,23 @@ UDFWriteFile__(
         ExtPrint(("  write old in-icd data\n"));
         status = UDFWriteFileData(IrpContext, Vcb, FileInfo, 0, (uint32)OldLen, FALSE, OldInIcb, &_WrittenBytes);
         MyFreePool__(OldInIcb);
-        if (!NT_SUCCESS(status))
+        if (!NT_SUCCESS(status)) {
+            UDF_FUNCTION_TIMING_END("UDFWriteFile__");
             return status;
+        }
     }
     // ufff...
     // & now we'll write out data to well prepared extent...
     // ... like all normal people do...
     ExtPrint(("  write user data\n"));
-    if (!NT_SUCCESS(status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, FALSE, Buffer, WrittenBytes)))
+    if (!NT_SUCCESS(status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, FALSE, Buffer, WrittenBytes))) {
+        UDF_FUNCTION_TIMING_END("UDFWriteFile__");
         return status;
+    }
     UDFSetFileSize(FileInfo, t);
     Dloc->DataLoc.Modified = TRUE;
     ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
+    UDF_FUNCTION_TIMING_END("UDFWriteFile__");
     return STATUS_SUCCESS;
 } // end UDFWriteFile__()
 
@@ -4843,29 +4868,45 @@ UDFResizeFile__(PIRP_CONTEXT IrpContext, PVCB Vcb,
     BOOLEAN possiblyModified = FALSE;
     BOOLEAN txnInitialized = FALSE;
 
+    UDF_FUNCTION_TIMING_START();
     if (!FileInfo || !FileInfo->Dloc || !FileInfo->Dloc->DataLoc.Mapping ||
         NewLength < 0 ||
         NewLength >= FileInfo->Dloc->DataLoc.Length ||
         Vcb->Cow ||         // frees already wait for a committed checkpoint
         UDFIsADirectory(FileInfo) ||
-        (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED))
-        return UDFResizeFileUnordered__(IrpContext, Vcb, FileInfo, NewLength);
+        (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED)) {
+        status = UDFResizeFileUnordered__(IrpContext, Vcb, FileInfo, NewLength);
+        UDF_FUNCTION_TIMING_END("UDFResizeFile__");
+        return status;
+    }
 
     /* No other allocator may see the freed RAM bits before the old FE is
      * durable.  This resource is recursively exclusive for calls below. */
     status = UDFDrainNewFileData(IrpContext, Vcb, FileInfo);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) {
+        UDF_FUNCTION_TIMING_END("UDFResizeFile__");
+        return status;
+    }
     status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) {
+        UDF_FUNCTION_TIMING_END("UDFResizeFile__");
+        return status;
+    }
     entries = UDFGetMappingLength(FileInfo->Dloc->DataLoc.Mapping) /
               sizeof(EXTENT_MAP) +
               UDFGetMappingLength(FileInfo->Dloc->AllocLoc.Mapping) /
               sizeof(EXTENT_MAP) + 4;
-    if (entries > 65536 || entries > ((SIZE_T)-1) / sizeof(EXTENT_MAP))
-        return UDFResizeFileUnordered__(IrpContext, Vcb, FileInfo, NewLength);
+    if (entries > 65536 || entries > ((SIZE_T)-1) / sizeof(EXTENT_MAP)) {
+        status = UDFResizeFileUnordered__(IrpContext, Vcb, FileInfo, NewLength);
+        UDF_FUNCTION_TIMING_END("UDFResizeFile__");
+        return status;
+    }
     released = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
                     entries * sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
-    if (!released) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!released) {
+        UDF_FUNCTION_TIMING_END("UDFResizeFile__");
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     RtlZeroMemory(released, entries * sizeof(EXTENT_MAP));
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
     _SEH2_TRY {
@@ -4935,6 +4976,7 @@ UDFResizeFile__(PIRP_CONTEXT IrpContext, PVCB Vcb,
         UDFReleaseResource(&(Vcb->BitMapResource1));
         MyFreePool__(released);
     } _SEH2_END;
+    UDF_FUNCTION_TIMING_END("UDFResizeFile__");
     return status;
 }
 

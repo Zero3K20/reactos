@@ -1,7 +1,9 @@
 
 include_directories(Include)
 
-option(UDFS_FUNCTION_TIMING "Print execution time for every UDFS function" OFF)
+option(UDFS_FUNCTION_TIMING "Time selected UDFS functions" OFF)
+set(UDFS_FUNCTION_TIMING_MIN_US 1000 CACHE STRING
+    "Minimum function duration to print in microseconds (0 prints every call)")
 
 list(APPEND SOURCE
     udf_info/alloc.c
@@ -37,7 +39,6 @@ list(APPEND SOURCE
     shutdown.c
     sys_spec.c
     udf_dbg.c
-    udf_timing.c
     udfinit.c
     unload.c
     verfysup.c
@@ -54,25 +55,9 @@ add_library(udfs MODULE ${SOURCE} udffs.rc)
 target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 
 if(UDFS_FUNCTION_TIMING)
-    if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
-        target_compile_definitions(udfs PRIVATE UDF_FUNCTION_TIMING)
-        foreach(SOURCE_FILE ${SOURCE})
-            if(SOURCE_FILE MATCHES "\\.c$" AND NOT SOURCE_FILE STREQUAL "udf_timing.c")
-                set_source_files_properties(${SOURCE_FILE} PROPERTIES
-                    COMPILE_OPTIONS -finstrument-functions)
-            endif()
-        endforeach()
-    elseif(MSVC)
-        target_compile_definitions(udfs PRIVATE UDF_FUNCTION_TIMING)
-        foreach(SOURCE_FILE ${SOURCE})
-            if(SOURCE_FILE MATCHES "\\.c$" AND NOT SOURCE_FILE STREQUAL "udf_timing.c")
-                set_source_files_properties(${SOURCE_FILE} PROPERTIES
-                    COMPILE_OPTIONS "/Gh;/GH")
-            endif()
-        endforeach()
-    else()
-        message(FATAL_ERROR "UDFS_FUNCTION_TIMING requires GCC, Clang, or MSVC")
-    endif()
+    target_compile_definitions(udfs PRIVATE
+        UDF_FUNCTION_TIMING
+        UDF_FUNCTION_TIMING_MIN_US=${UDFS_FUNCTION_TIMING_MIN_US})
 endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")

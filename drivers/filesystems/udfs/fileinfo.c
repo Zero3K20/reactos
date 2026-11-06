@@ -247,6 +247,7 @@ UDFCommonSetInfo(
     BOOLEAN                 PostRequest = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
 
+    UDF_FUNCTION_TIMING_START();
     TmPrint(("UDFCommonSetInfo: irp %x\n", Irp));
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -260,6 +261,7 @@ UDFCommonSetInfo(
     if ((TypeOfOpen != UserFileOpen && TypeOfOpen != UserDirectoryOpen) ||
         Fcb == NULL || Ccb == NULL) {
         UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        UDF_FUNCTION_TIMING_END("UDFCommonSetInfo");
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -444,6 +446,7 @@ try_exit:   NOTHING;
         }
     } _SEH2_END;// end of "__finally" processing
 
+    UDF_FUNCTION_TIMING_END("UDFCommonSetInfo");
     return Status;
 } // end UDFCommonSetInfo()
 
@@ -1010,6 +1013,7 @@ UDFSetBasicInformation(
     ULONG           NotifyFilter = 0;
     PDIR_INDEX_ITEM DirNdx;
 
+    UDF_FUNCTION_TIMING_START();
     AdPrint(("UDFSetBasicInformation\n"));
 
     _SEH2_TRY {
@@ -1156,6 +1160,7 @@ try_exit: NOTHING;
     } _SEH2_FINALLY {
         ;
     } _SEH2_END;
+    UDF_FUNCTION_TIMING_END("UDFSetBasicInformation");
     return(RC);
 } // end UDFSetBasicInformation()
 

@@ -342,6 +342,7 @@ UDFTeardownStructures(
     BOOLEAN Abort = FALSE;
     BOOLEAN Removed;
 
+    UDF_FUNCTION_TIMING_START();
     AdPrint(("UDFTeardownStructures, StartingFcb %p %s\n",
              StartingFcb, Recursive ? "Recursive" : "Flat"));
 
@@ -355,6 +356,7 @@ UDFTeardownStructures(
     //
     if (!Recursive) {
         if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_IN_TEARDOWN)) {
+            UDF_FUNCTION_TIMING_END("UDFTeardownStructures");
             return;
         }
         SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_IN_TEARDOWN);
@@ -656,6 +658,7 @@ UDFTeardownStructures(
     AdPrint(("UDFTeardownStructures, RemovedStartingFcb -> %c\n",
              *RemovedStartingFcb ? 'T' : 'F'));
 
+    UDF_FUNCTION_TIMING_END("UDFTeardownStructures");
 } // end UDFTeardownStructures()
 
 PFCB

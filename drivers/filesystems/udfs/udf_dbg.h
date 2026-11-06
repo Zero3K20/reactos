@@ -33,7 +33,42 @@
 //#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
-// Configure with -DUDFS_FUNCTION_TIMING=ON to time every function.
+// Configure with -DUDFS_FUNCTION_TIMING=ON to time selected hot functions.
+
+#ifdef UDF_FUNCTION_TIMING
+#ifndef UDF_FUNCTION_TIMING_MIN_US
+#define UDF_FUNCTION_TIMING_MIN_US 1000
+#endif
+
+ULONG
+_cdecl
+DbgPrint(
+    const char* Format,
+    ...
+    );
+
+#define UDF_FUNCTION_TIMING_START() \
+    LARGE_INTEGER UdfFunctionTimingStart = KeQueryPerformanceCounter(NULL)
+#define UDF_FUNCTION_TIMING_END(_FunctionName) do { \
+    LARGE_INTEGER UdfFunctionTimingFrequency; \
+    LARGE_INTEGER UdfFunctionTimingEnd = KeQueryPerformanceCounter(&UdfFunctionTimingFrequency); \
+    ULONGLONG UdfFunctionTimingElapsedUs = 0; \
+    if (UdfFunctionTimingFrequency.QuadPart > 0 && \
+        UdfFunctionTimingEnd.QuadPart >= UdfFunctionTimingStart.QuadPart) { \
+        ULONGLONG UdfFunctionTimingTicks = UdfFunctionTimingEnd.QuadPart - UdfFunctionTimingStart.QuadPart; \
+        ULONGLONG UdfFunctionTimingFrequencyValue = UdfFunctionTimingFrequency.QuadPart; \
+        UdfFunctionTimingElapsedUs = \
+            (UdfFunctionTimingTicks / UdfFunctionTimingFrequencyValue) * 1000000 + \
+            ((UdfFunctionTimingTicks % UdfFunctionTimingFrequencyValue) * 1000000) / \
+                UdfFunctionTimingFrequencyValue; \
+    } \
+    if (UdfFunctionTimingElapsedUs >= UDF_FUNCTION_TIMING_MIN_US) \
+        DbgPrint("UDF timing: %s took %I64u us\n", _FunctionName, UdfFunctionTimingElapsedUs); \
+} while (0)
+#else
+#define UDF_FUNCTION_TIMING_START() ((void)0)
+#define UDF_FUNCTION_TIMING_END(_FunctionName) ((void)0)
+#endif
 
 //======================================
 
