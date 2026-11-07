@@ -61,7 +61,6 @@ UDFCommonWrite(
     BOOLEAN                 PagingIoResourceAcquired = FALSE;
     BOOLEAN                 MainResourceAcquired = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
-    BOOLEAN                 VcbWriteRundownAcquired = FALSE;
 
     BOOLEAN                 Wait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
@@ -316,21 +315,6 @@ UDFCommonWrite(
             NumberBytesWritten = NT_SUCCESS(Status) ? ByteCount : 0;
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
             try_return(Status);
-        }
-
-        /* Admit user writes before taking any FCB lock. The rundown keeps a
-         * full-volume flush from starting until the write completes, without
-         * holding the VCB resource over I/O. Paging writes bypass this gate
-         * because Cache Manager can issue them with an FCB resource held. */
-        if (!PagingIo) {
-            UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
-            VcbAcquired = TRUE;
-            if (!ExAcquireRundownProtection(&Vcb->VcbWriteRundown))
-                try_return(Status = STATUS_CANT_WAIT);
-            VcbWriteRundownAcquired = TRUE;
-            InterlockedIncrement(&Vcb->VcbWriteCount);
-            UDFReleaseVcb(IrpContext, Vcb);
-            VcbAcquired = FALSE;
         }
 
         // Validate start offset and length supplied.
@@ -822,11 +806,6 @@ try_exit:   NOTHING;
 
         if (MainResourceAcquired) {
             UDFReleaseFcb(IrpContext, Fcb);
-        }
-
-        if (VcbWriteRundownAcquired) {
-            ExReleaseRundownProtection(&Vcb->VcbWriteRundown);
-            InterlockedDecrement(&Vcb->VcbWriteCount);
         }
 
         if (VcbAcquired) {

@@ -1776,47 +1776,6 @@ Return Value:
 }
 
 VOID
-UDFWaitForVcbWriteRundown(
-    IN PVCB Vcb
-    )
-{
-    PAGED_CODE();
-
-    if (!Vcb->VcbWriteRundownActive) {
-        ExWaitForRundownProtectionRelease(&Vcb->VcbWriteRundown);
-        Vcb->VcbWriteRundownActive = TRUE;
-    }
-}
-
-BOOLEAN
-UDFAcquireVcbExclusive(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN BOOLEAN IgnoreWait
-    )
-{
-    BOOLEAN Wait;
-
-    if (!UDFAcquireResource(IrpContext, &Vcb->VcbResource, IgnoreWait,
-                            AcquireExclusive)) {
-        return FALSE;
-    }
-
-    Wait = !IgnoreWait &&
-           FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-    if (!Wait && InterlockedCompareExchange(&Vcb->VcbWriteCount, 0, 0)) {
-        ExReleaseResourceLite(&Vcb->VcbResource);
-        if (!IgnoreWait) {
-            UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
-        }
-        return FALSE;
-    }
-
-    UDFWaitForVcbWriteRundown(Vcb);
-    return TRUE;
-}
-
-VOID
 UDFFinishIoAtEof(
     IN PFCB Fcb
     )

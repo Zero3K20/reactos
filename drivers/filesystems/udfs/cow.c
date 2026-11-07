@@ -556,13 +556,8 @@ CowQuiesce(PVCB Vcb, PUDF_COW Cow)
 
     delay.QuadPart = -10LL * 1000 * 20;
     for (i = 0; i < UDF_COW_QUIESCE_TRIES; i++) {
-        if (ExAcquireResourceExclusiveLite(&Vcb->VcbResource, FALSE)) {
-            if (!InterlockedCompareExchange(&Vcb->VcbWriteCount, 0, 0)) {
-                UDFWaitForVcbWriteRundown(Vcb);
-                return TRUE;
-            }
-            UDFReleaseVcb(NULL, Vcb);
-        }
+        if (ExAcquireResourceExclusiveLite(&Vcb->VcbResource, FALSE))
+            return TRUE;
         if (Cow && Cow->Stop)
             return FALSE;
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
@@ -600,7 +595,7 @@ CowThread(PVOID Context)
         if (!cow->Stop)
             (VOID)UDFCowCheckpoint(&irpContext, Vcb, FALSE);
         if (held)
-            UDFReleaseVcb(&irpContext, Vcb);
+            ExReleaseResourceLite(&Vcb->VcbResource);
         KeLeaveCriticalRegion();
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
@@ -619,23 +614,17 @@ UDFCowSync(
 {
     NTSTATUS status;
     BOOLEAN held = FALSE;
-    BOOLEAN exclusive;
 
     if (!Vcb->Cow)
         return STATUS_SUCCESS;
     KeEnterCriticalRegion();
-    exclusive = ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource);
-    if (!exclusive &&
-        !ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
+    if (!ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
         ExAcquireResourceExclusiveLite(&Vcb->VcbResource, TRUE);
-        UDFWaitForVcbWriteRundown(Vcb);
         held = TRUE;
-    } else if (exclusive) {
-        UDFWaitForVcbWriteRundown(Vcb);
     }
     status = UDFCowCheckpoint(IrpContext, Vcb, FALSE);
     if (held)
-        UDFReleaseVcb(IrpContext, Vcb);
+        ExReleaseResourceLite(&Vcb->VcbResource);
     KeLeaveCriticalRegion();
     return status;
 }

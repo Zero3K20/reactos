@@ -1396,34 +1396,14 @@ UDFAcquireResource(
     _In_ enum TYPE_OF_ACQUIRE Type
     );
 
-_Requires_lock_held_(_Global_critical_region_)
-_When_(return != FALSE, _Acquires_exclusive_lock_(Vcb->VcbResource))
-_When_(IgnoreWait == FALSE, _Post_satisfies_(return == TRUE))
-BOOLEAN
-UDFAcquireVcbExclusive(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN BOOLEAN IgnoreWait
-    );
-
-_Requires_lock_held_(Vcb->VcbResource)
-_Requires_lock_held_(_Global_critical_region_)
-VOID
-UDFWaitForVcbWriteRundown(
-    IN PVCB Vcb
-    );
+#define UDFAcquireVcbExclusive(IC,V,I)                                                  \
+    UDFAcquireResource( (IC), &(V)->VcbResource, (I), AcquireExclusive )
 
 #define UDFAcquireVcbShared(IC,V,I)                                                     \
     UDFAcquireResource((IC), &(V)->VcbResource, (I), AcquireShared)
 
 #define UDFReleaseVcb(IC,V)                                                             \
-    do {                                                                                \
-        if ((V)->VcbWriteRundownActive) {                                               \
-            (V)->VcbWriteRundownActive = FALSE;                                         \
-            ExReInitializeRundownProtection(&(V)->VcbWriteRundown);                    \
-        }                                                                               \
-        ExReleaseResourceLite(&(V)->VcbResource);                                       \
-    } while (0)
+    ExReleaseResourceLite(&(V)->VcbResource)
 
 #define UDFAcquireUdfData(IC)                                                           \
     ExAcquireResourceExclusiveLite(&UdfData.GlobalDataResource, TRUE)
