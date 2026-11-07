@@ -50,6 +50,10 @@ add_library(udfs MODULE ${SOURCE} udffs.rc)
 
 target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 
+if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(udfs PRIVATE /Oi)
+endif()
+
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)
     target_compile_options(udfs PRIVATE -Werror)
