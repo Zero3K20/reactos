@@ -90,7 +90,7 @@ UDFDeferNewFileMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileIn
         return FALSE;
     if (IrpContext->MajorFunction == IRP_MJ_CLEANUP) {
         UDF_METADATA_COUNT(Vcb,25);
-        return FALSE;
+        return TRUE;
     }
     if (IrpContext->MajorFunction == IRP_MJ_WRITE) {
         /* A zero-byte allocation update changes no payload. For real data

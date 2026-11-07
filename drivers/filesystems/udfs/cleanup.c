@@ -29,9 +29,9 @@ UDFAutoUnlock (
 /* Called under this directory's FCB resource. An indexed, referenced FCB
  * and its Dloc retain the unpublished append generation. Final teardown
  * drains it before removing the FCB/LCB; an explicit flush drains before FE.
- * Ordinary file cleanup and all error/write-through boundaries stay eager.
- * Directory FileObjects do not carry FO_CACHE_SUPPORTED (create.c); the
- * pending generation was already admitted by a cached child cleanup. */
+ * Error/write-through boundaries stay eager. Directory FileObjects do not
+ * carry FO_CACHE_SUPPORTED (create.c); the pending generation was already
+ * admitted by a cached child cleanup. */
 static BOOLEAN
 UDFCanDeferDirectoryAppendCleanup(PVCB Vcb, PUDF_FILE_INFO FileInfo,
                                   PFILE_OBJECT FileObject)
@@ -619,22 +619,25 @@ delete_attempt_done:
             }
         }
 
-        // Keep structural updates eager. Only an owned unpublished append or
-        // a proved attribute-only directory generation may remain resident.
+        // Keep structural updates eager. Eligible unpublished files and
+        // proved directory-only generations may remain resident for batching.
         // Final teardown flushes before removing the canonical FCB/LCB;
         // explicit flush never takes either cleanup-only exception.
+        //
+        // Regular files normally flush here. A new unpublished file may defer
+        // its metadata so the close or volume writer can batch it.
         if (!Fcb->FcbCleanup &&
             !ForcedCleanUp &&
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo &&
-            // Regular files are always flushed here; only directories may
+            !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo) &&
+            // Other regular files are flushed here; directories may also
             // keep a pending append or attribute-only update in memory.
             (!(Fcb->FcbState & UDF_FCB_DIRECTORY) ||
              (!UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
               !UDFCanDeferDirectoryAttributesCleanup(IrpContext, Vcb,
-                                                    NextFileInfo, FileObject) &&
-              !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)))) {
+                                                    NextFileInfo, FileObject)))) {
             NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                   NextFileInfo, 0);
             if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(FlushStatus))
