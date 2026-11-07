@@ -248,6 +248,7 @@ UDFReadWriteSectorsRaw(
     NTSTATUS RC = STATUS_SUCCESS;
     PEXTENT_MAP RelocExtent;
     PEXTENT_MAP RelocExtent_saved = NULL;
+    PCHAR BufferPtr = Buffer;
 
     uint32 Lba = (uint32)(StartingOffset >> Vcb->SectorShift);
     uint32 BCount = ByteCount >> Vcb->SectorShift;
@@ -329,8 +330,8 @@ UDFReadWriteSectorsRaw(
             if (!IsWrite) {
 
                 if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->SessionEndLba + 1)) {
-                    RtlZeroMemory(Buffer, FragLength);
-                    *((uint32*)&Buffer) += FragLength;
+                    RtlZeroMemory(BufferPtr, FragLength);
+                    BufferPtr += FragLength;
                     continue;
                 }
 
@@ -340,7 +341,7 @@ UDFReadWriteSectorsRaw(
                 rLba = UDFFixFPAddress(Vcb, rLba);
 
                 RC = UDFSendSectorIo(IrpContext,
-                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         Vcb->TargetDeviceObject, BufferPtr, FragLength,
                          ((uint64)rLba) << Vcb->SectorShift, FALSE);
 
                 Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
@@ -351,12 +352,12 @@ UDFReadWriteSectorsRaw(
                 if (!NT_SUCCESS(RC)) break;
 
                 RC = UDFSendSectorIo(IrpContext,
-                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         Vcb->TargetDeviceObject, BufferPtr, FragLength,
                          ((uint64)rLba) << Vcb->SectorShift, TRUE);
             }
 
             if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += FragLength;
+            BufferPtr += FragLength;
         }
 
 try_exit: NOTHING;
