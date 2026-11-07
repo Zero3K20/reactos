@@ -107,6 +107,7 @@ UDFSendSectorIoChunk(
 {
     KEVENT Event;
     LARGE_INTEGER ROffset;
+    IO_STATUS_BLOCK IoStatus;
     PIRP Irp;
     PIO_STACK_LOCATION IrpSp;
     NTSTATUS Status;
@@ -117,24 +118,18 @@ UDFSendSectorIoChunk(
 
     KeInitializeEvent(&Event, NotificationEvent, FALSE);
 
-    Irp = IoBuildAsynchronousFsdRequest(
+    Irp = IoBuildSynchronousFsdRequest(
         IsWrite ? IRP_MJ_WRITE : IRP_MJ_READ,
         TargetDeviceObject,
         Buffer,
         ByteCount,
         &ROffset,
-        NULL);
+        &Event,
+        &IoStatus);
 
     if (!Irp) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-
-    IoSetCompletionRoutine(Irp,
-                           &UDFHijackCompletionRoutine,
-                           &Event,
-                           TRUE,
-                           TRUE,
-                           TRUE);
 
     IrpSp = IoGetNextIrpStackLocation(Irp);
 
@@ -148,28 +143,16 @@ UDFSendSectorIoChunk(
 
     if (Status == STATUS_PENDING) {
         KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
-        Status = Irp->IoStatus.Status;
+        Status = IoStatus.Status;
+    } else if (NT_SUCCESS(Status)) {
+        Status = IoStatus.Status;
     }
 
     /* A successful IRP with fewer bytes than requested did not transfer the
      * complete sector range.  Do not report that metadata was persisted. */
-    if (NT_SUCCESS(Status) &&
-        (!NT_SUCCESS(Irp->IoStatus.Status) ||
-         Irp->IoStatus.Information != ByteCount)) {
-        Status = NT_SUCCESS(Irp->IoStatus.Status) ?
-                 STATUS_IO_DEVICE_ERROR : Irp->IoStatus.Status;
+    if (NT_SUCCESS(Status) && IoStatus.Information != ByteCount) {
+        Status = STATUS_IO_DEVICE_ERROR;
     }
-
-    //  Free MDL chain.
-
-    while (Irp->MdlAddress != NULL) {
-        PMDL NextMdl = Irp->MdlAddress->Next;
-        MmUnlockPages(Irp->MdlAddress);
-        IoFreeMdl(Irp->MdlAddress);
-        Irp->MdlAddress = NextMdl;
-    }
-
-    IoFreeIrp(Irp);
 
     return Status;
 } // end UDFSendSectorIoChunk()
@@ -182,9 +165,8 @@ UDFSendSectorIoChunk(
 *    Build and send a read/write IRP to the target device as a series of chunks.
 *    Waits for completion synchronously.  Handles MDL and IRP cleanup.
 *
-*    Sending as chunks because, the Mdl is allocated with IoAllocateMdl by 
-*    IoBuildAsynchronousFsdRequest, which fails above ~64 MB on x86 and ~32 MB 
-*    on amd64 on ReactOS and NT 5.x.
+*    Sending as chunks because the MDL allocated by IoBuildSynchronousFsdRequest
+*    fails above ~64 MB on x86 and ~32 MB on amd64 on ReactOS and NT 5.x.
 *
 *************************************************************************/
 
