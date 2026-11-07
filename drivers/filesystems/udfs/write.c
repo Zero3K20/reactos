@@ -317,15 +317,6 @@ UDFCommonWrite(
             try_return(Status);
         }
 
-        /* A full volume flush owns the VCB exclusively through its CLOSED
-         * LVID commit. Block new user writes before taking any FCB lock;
-         * paging writes are drained by that flush and may arrive with an FCB
-         * resource already held by Cache Manager. */
-        if (!PagingIo) {
-            UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
-            VcbAcquired = TRUE;
-        }
-
         // Validate start offset and length supplied.
         // Here is a special check that determines whether the caller wishes to
         // begin the write at current end-of-file (whatever the value of that
