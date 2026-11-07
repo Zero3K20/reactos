@@ -44,7 +44,9 @@ UDFLookupAllocation(
     _In_ PFCB Fcb,
     _In_ LONGLONG FileOffset,
     _Out_ PLONGLONG DiskOffset,
-    _Out_ PULONG ByteCount
+    _Out_ PULONG ByteCount,
+    _Inout_ PEXTENT_MAP *ExtentCursor,
+    _Inout_ PLONGLONG ExtentOffset
     );
 
 static
@@ -57,6 +59,8 @@ UDFPrepareBuffers(
     _In_ ULONG UserBufferOffset,
     _In_ LONGLONG StartingOffset,
     _In_ ULONG ByteCount,
+    _Inout_ PEXTENT_MAP *ExtentCursor,
+    _Inout_ PLONGLONG ExtentOffset,
     _Inout_ PIO_RUN IoRuns,
     _Out_ PULONG RunCount,
     _Out_ PULONG ThisByteCount,
@@ -151,6 +155,10 @@ UDFNonCachedIo(
     BOOLEAN FlushIoBuffers = FALSE;
     BOOLEAN FirstPass = TRUE;
     BOOLEAN IsWrite = (IrpContext->MajorFunction == IRP_MJ_WRITE);
+    PEXTENT_MAP ScanExtent;
+    PEXTENT_MAP IoExtent;
+    LONGLONG ScanExtentOffset = 0;
+    LONGLONG IoExtentOffset = 0;
 
     //  Validate preconditions.
 
@@ -201,6 +209,7 @@ UDFNonCachedIo(
     //  reaching this point.  Assert that we have a real disk mapping.
 
     ASSERT(ExtInfo->Offset == 0 && ExtInfo->Mapping != NULL);
+    ScanExtent = IoExtent = ExtInfo->Mapping;
 
     //  Get the mapped system address for the user buffer.
 
@@ -233,7 +242,9 @@ UDFNonCachedIo(
             BOOLEAN Recorded = UDFLookupAllocation(IrpContext, Fcb,
                                                    ScanOffset,
                                                    &DiskOffset,
-                                                   &CurrentByteCount);
+                                                   &CurrentByteCount,
+                                                   &ScanExtent,
+                                                   &ScanExtentOffset);
 
             if (CurrentByteCount > ScanRemaining) {
                 CurrentByteCount = ScanRemaining;
@@ -274,6 +285,10 @@ UDFNonCachedIo(
         }
     }
 
+    /* Conversion may replace the mapping, so start the I/O walk afresh. */
+    IoExtent = ExtInfo->Mapping;
+    IoExtentOffset = 0;
+
     //  The caller must have set up the IoContext before calling us.
     //  (Stack-allocated for sync, pool-allocated for async.)
 
@@ -302,6 +317,8 @@ UDFNonCachedIo(
                                           UserBufferOffset,
                                           CurrentOffset,
                                           RemainingByteCount,
+                                          &IoExtent,
+                                          &IoExtentOffset,
                                           IoRuns,
                                           &CleanupRunCount,
                                           &ThisByteCount,
@@ -465,20 +482,27 @@ UDFLookupAllocation(
     _In_ PFCB Fcb,
     _In_ LONGLONG FileOffset,
     _Out_ PLONGLONG DiskOffset,
-    _Out_ PULONG ByteCount
+    _Out_ PULONG ByteCount,
+    _Inout_ PEXTENT_MAP *ExtentCursor,
+    _Inout_ PLONGLONG ExtentOffset
     )
 {
     PVCB Vcb = Fcb->Vcb;
     PUDF_FILE_INFO FileInfo = Fcb->FileInfo;
     PEXTENT_INFO ExtInfo = &FileInfo->Dloc->DataLoc;
-    PEXTENT_MAP Extent = ExtInfo->Mapping;
+    PEXTENT_MAP Extent = *ExtentCursor;
 
-    uint32 SectorOff, Flags, Index;
+    uint32 SectorOff, Flags, Index, i;
     SIZE_T AvailLength;
-
     UNREFERENCED_PARAMETER(IrpContext);
 
-    uint32 Lba = UDFExtentOffsetToLba(Vcb, Extent, FileOffset,
+    if (FileOffset < *ExtentOffset) {
+        *ExtentCursor = Extent = ExtInfo->Mapping;
+        *ExtentOffset = 0;
+    }
+
+    uint32 Lba = UDFExtentOffsetToLba(Vcb, Extent,
+                                      FileOffset - *ExtentOffset,
                                       &SectorOff, &AvailLength, &Flags, &Index);
 
     if (Lba == LBA_OUT_OF_EXTENT) {
@@ -489,6 +513,12 @@ UDFLookupAllocation(
         *ByteCount = 0;
         return FALSE;
     }
+
+    for (i = 0; i < Index; i++) {
+        *ExtentOffset +=
+            Extent[i].extLength & UDF_EXTENT_LENGTH_MASK;
+    }
+    *ExtentCursor += Index;
 
     *ByteCount = (ULONG)AvailLength;
 
@@ -645,6 +675,8 @@ UDFPrepareBuffers(
     _In_ ULONG UserBufferOffset,
     _In_ LONGLONG StartingOffset,
     _In_ ULONG ByteCount,
+    _Inout_ PEXTENT_MAP *ExtentCursor,
+    _Inout_ PLONGLONG ExtentOffset,
     _Inout_ PIO_RUN IoRuns,
     _Out_ PULONG RunCount,
     _Out_ PULONG ThisByteCount,
@@ -692,7 +724,9 @@ UDFPrepareBuffers(
                                        Fcb,
                                        CurrentFileOffset,
                                        &DiskOffset,
-                                       &CurrentByteCount);
+                                       &CurrentByteCount,
+                                       ExtentCursor,
+                                       ExtentOffset);
 
         //
         //  Limit to the data requested.
