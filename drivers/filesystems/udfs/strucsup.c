@@ -1115,6 +1115,7 @@ UDFInitializeVCB(
     _SEH2_TRY {
 
         ExInitializeResourceLite(&Vcb->VcbResource);
+        ExInitializeRundownProtection(&Vcb->VcbWriteRundown);
         ExInitializeResourceLite(&Vcb->BitMapResource1);
         ExInitializeResourceLite(&Vcb->MetadataGrowResource);
         ExInitializeResourceLite(&Vcb->CowResource);
