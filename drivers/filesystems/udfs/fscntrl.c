@@ -613,7 +613,11 @@ UDFMountVolume(
         Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
 
         //  The new mount is complete.
-        UDFReleaseResource( &(Vcb->VcbResource) );
+#ifdef UDF_FUNCTION_TIMING
+        UDFReleaseVcb(IrpContext, Vcb);
+#else
+        UDFReleaseResource(&(Vcb->VcbResource));
+#endif
         VcbAcquired = FALSE;
         Vcb = NULL;
 
@@ -639,7 +643,11 @@ try_exit: NOTHING;
                     InterlockedDecrement((PLONG)&Vcb->VcbReference);
                 // This procedure will also delete the volume device object
                 if (UDFDismountVcb(IrpContext, Vcb, FALSE)) {
-                    UDFReleaseResource( &(Vcb->VcbResource) );
+#ifdef UDF_FUNCTION_TIMING
+                    UDFReleaseVcb(IrpContext, Vcb);
+#else
+                    UDFReleaseResource(&(Vcb->VcbResource));
+#endif
                 }
             } else if (VolDo) {
                 IoDeleteDevice((PDEVICE_OBJECT)VolDo);

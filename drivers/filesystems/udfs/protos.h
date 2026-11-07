@@ -1411,6 +1411,12 @@ UDFAcquireVcbResource(
 
 VOID
 UDFRecordVcbResourceOwnerStack(
+    _Inout_ PVCB Vcb,
+    _In_ ULONG FramesToSkip
+    );
+
+VOID
+UDFReleaseVcbResource(
     _Inout_ PVCB Vcb
     );
 
@@ -1427,8 +1433,13 @@ UDFRecordVcbResourceOwnerStack(
     UDFAcquireResource((IC), &(V)->VcbResource, (I), AcquireShared)
 #endif
 
+#ifdef UDF_FUNCTION_TIMING
+#define UDFReleaseVcb(IC,V)                                                             \
+    UDFReleaseVcbResource((V))
+#else
 #define UDFReleaseVcb(IC,V)                                                             \
     ExReleaseResourceLite(&(V)->VcbResource)
+#endif
 
 #define UDFAcquireUdfData(IC)                                                           \
     ExAcquireResourceExclusiveLite(&UdfData.GlobalDataResource, TRUE)

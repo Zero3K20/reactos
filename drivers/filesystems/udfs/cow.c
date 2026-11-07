@@ -558,7 +558,7 @@ CowQuiesce(PVCB Vcb, PUDF_COW Cow)
     for (i = 0; i < UDF_COW_QUIESCE_TRIES; i++) {
         if (ExAcquireResourceExclusiveLite(&Vcb->VcbResource, FALSE)) {
 #ifdef UDF_FUNCTION_TIMING
-            UDFRecordVcbResourceOwnerStack(Vcb);
+            UDFRecordVcbResourceOwnerStack(Vcb, 1);
 #endif
             return TRUE;
         }
@@ -599,7 +599,7 @@ CowThread(PVOID Context)
         if (!cow->Stop)
             (VOID)UDFCowCheckpoint(&irpContext, Vcb, FALSE);
         if (held)
-            ExReleaseResourceLite(&Vcb->VcbResource);
+            UDFReleaseVcb(NULL, Vcb);
         KeLeaveCriticalRegion();
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
@@ -625,13 +625,13 @@ UDFCowSync(
     if (!ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
         ExAcquireResourceExclusiveLite(&Vcb->VcbResource, TRUE);
 #ifdef UDF_FUNCTION_TIMING
-        UDFRecordVcbResourceOwnerStack(Vcb);
+        UDFRecordVcbResourceOwnerStack(Vcb, 1);
 #endif
         held = TRUE;
     }
     status = UDFCowCheckpoint(IrpContext, Vcb, FALSE);
     if (held)
-        ExReleaseResourceLite(&Vcb->VcbResource);
+        UDFReleaseVcb(IrpContext, Vcb);
     KeLeaveCriticalRegion();
     return status;
 }

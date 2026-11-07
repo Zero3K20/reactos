@@ -1745,9 +1745,12 @@ Return Value:
     PVOID ResourceAcquireStack[8];
     USHORT ResourceAcquireFrameCount;
     ULONG ResourceAcquireFrame;
-    PVOID ResourceVcbOwnerStack[8];
-    USHORT ResourceVcbOwnerStackCount = 0;
-    HANDLE ResourceVcbOwnerThread = NULL;
+    UDF_VCB_RESOURCE_OWNER ResourceVcbOwner;
+    ULONG ResourceVcbOwnerCount = 0;
+    ULONG ResourceVcbOwnerIndex;
+    ULONG ResourceVcbOwnerOverflowCount = 0;
+    BOOLEAN ResourceIsVcb = FALSE;
+    BOOLEAN ResourceVcbOwnerMatched = FALSE;
 #endif
     PAGED_CODE();
 
@@ -1769,22 +1772,40 @@ Return Value:
         ResourceAcquireCaller = UDF_TRACE_CALLER();
         ResourceAcquireOwner =
             (PVOID)Resource->OwnerEntry.OwnerThread;
+        RtlZeroMemory(&ResourceVcbOwner, sizeof(ResourceVcbOwner));
         if (IrpContext->Vcb != NULL &&
-            Resource == &IrpContext->Vcb->VcbResource &&
-            ResourceAcquireOwner != NULL) {
+            Resource == &IrpContext->Vcb->VcbResource) {
             KIRQL OldIrql;
+            ResourceIsVcb = TRUE;
             KeAcquireSpinLock(&IrpContext->Vcb->VcbResourceOwnerStackLock,
                               &OldIrql);
-            if (IrpContext->Vcb->VcbResourceOwnerThread ==
-                ResourceAcquireOwner) {
-                ResourceVcbOwnerThread =
-                    IrpContext->Vcb->VcbResourceOwnerThread;
-                ResourceVcbOwnerStackCount =
-                    IrpContext->Vcb->VcbResourceOwnerStackCount;
-                RtlCopyMemory(ResourceVcbOwnerStack,
-                              IrpContext->Vcb->VcbResourceOwnerStack,
-                              sizeof(ResourceVcbOwnerStack));
+            for (ResourceVcbOwnerIndex = 0;
+                 ResourceVcbOwnerIndex < UDF_VCB_RESOURCE_OWNER_COUNT;
+                 ResourceVcbOwnerIndex++) {
+                PUDF_VCB_RESOURCE_OWNER Owner =
+                    &IrpContext->Vcb->VcbResourceOwners[ResourceVcbOwnerIndex];
+                if (Owner->AcquisitionCount) {
+                    ResourceVcbOwnerCount++;
+                    if (Owner->Thread == ResourceAcquireOwner) {
+                        ResourceVcbOwner = *Owner;
+                        ResourceVcbOwnerMatched = TRUE;
+                    }
+                }
             }
+            if (!ResourceVcbOwnerMatched && ResourceVcbOwnerCount == 1) {
+                for (ResourceVcbOwnerIndex = 0;
+                     ResourceVcbOwnerIndex < UDF_VCB_RESOURCE_OWNER_COUNT;
+                     ResourceVcbOwnerIndex++) {
+                    PUDF_VCB_RESOURCE_OWNER Owner =
+                        &IrpContext->Vcb->VcbResourceOwners[ResourceVcbOwnerIndex];
+                    if (Owner->AcquisitionCount) {
+                        ResourceVcbOwner = *Owner;
+                        break;
+                    }
+                }
+            }
+            ResourceVcbOwnerOverflowCount =
+                IrpContext->Vcb->VcbResourceOwnerOverflowCount;
             KeReleaseSpinLock(&IrpContext->Vcb->VcbResourceOwnerStackLock,
                               OldIrql);
         }
@@ -1875,18 +1896,23 @@ Return Value:
                          ResourceAcquireFrame,
                          ResourceAcquireStack[ResourceAcquireFrame]);
             }
-            if (ResourceVcbOwnerThread != NULL) {
-                DbgPrint("UDF VCB owner acquisition stack (captured at lock acquisition, not live): thread=%p resource=%p frames=%u\n",
-                         ResourceVcbOwnerThread,
+            if (ResourceIsVcb) {
+                DbgPrint("UDF VCB holder acquisition stack (captured at acquire, not live): resource=%p ownerSnapshot=%p trackedOwners=%lu ownerTrackingMissesTotal=%lu stackThread=%p ownerSnapshotMatch=%u acquisitions=%lu frames=%u\n",
                          Resource,
-                         (ULONG)ResourceVcbOwnerStackCount);
+                         ResourceAcquireOwner,
+                         ResourceVcbOwnerCount,
+                         ResourceVcbOwnerOverflowCount,
+                         ResourceVcbOwner.Thread,
+                         (ULONG)ResourceVcbOwnerMatched,
+                         ResourceVcbOwner.AcquisitionCount,
+                         (ULONG)ResourceVcbOwner.StackCount);
                 for (ResourceAcquireFrame = 0;
-                     ResourceAcquireFrame < ResourceVcbOwnerStackCount;
+                     ResourceAcquireFrame < ResourceVcbOwner.StackCount;
                      ResourceAcquireFrame++) {
-                    DbgPrint("UDF VCB owner stack: thread=%p frame=%lu address=%p\n",
-                             ResourceVcbOwnerThread,
+                    DbgPrint("UDF VCB holder stack: thread=%p frame=%lu address=%p\n",
+                             ResourceVcbOwner.Thread,
                              ResourceAcquireFrame,
-                             ResourceVcbOwnerStack[ResourceAcquireFrame]);
+                             ResourceVcbOwner.Stack[ResourceAcquireFrame]);
                 }
             }
         }
@@ -1901,6 +1927,15 @@ Return Value:
         UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
     }
 
+#ifdef UDF_FUNCTION_TIMING
+    if (Acquired &&
+        IrpContext != NULL &&
+        IrpContext->Vcb != NULL &&
+        Resource == &IrpContext->Vcb->VcbResource) {
+        UDFRecordVcbResourceOwnerStack(IrpContext->Vcb, 2);
+    }
+#endif
+
     return Acquired;
 }
 
@@ -1913,39 +1948,78 @@ UDFAcquireVcbResource(
     _In_ enum TYPE_OF_ACQUIRE Type
     )
 {
-    BOOLEAN Acquired;
-
-    Acquired = UDFAcquireResource(IrpContext,
-                                  &Vcb->VcbResource,
-                                  IgnoreWait,
-                                  Type);
-    if (Acquired) {
-        UDFRecordVcbResourceOwnerStack(Vcb);
-    }
-    return Acquired;
+    return UDFAcquireResource(IrpContext,
+                              &Vcb->VcbResource,
+                              IgnoreWait,
+                              Type);
 }
 
 VOID
 UDFRecordVcbResourceOwnerStack(
-    _Inout_ PVCB Vcb
+    _Inout_ PVCB Vcb,
+    _In_ ULONG FramesToSkip
     )
 {
-    PVOID OwnerStack[RTL_NUMBER_OF(Vcb->VcbResourceOwnerStack)];
+    PVOID OwnerStack[UDF_VCB_RESOURCE_OWNER_STACK_DEPTH];
+    PVOID CurrentThread;
+    ULONG OwnerIndex;
+    ULONG FreeOwnerIndex = UDF_VCB_RESOURCE_OWNER_COUNT;
     USHORT OwnerStackCount;
     KIRQL OldIrql;
 
     RtlZeroMemory(OwnerStack, sizeof(OwnerStack));
     OwnerStackCount = RtlCaptureStackBackTrace(
-        0,
+        FramesToSkip,
         RTL_NUMBER_OF(OwnerStack),
         OwnerStack,
         NULL);
+    CurrentThread = PsGetCurrentThread();
     KeAcquireSpinLock(&Vcb->VcbResourceOwnerStackLock, &OldIrql);
-    Vcb->VcbResourceOwnerThread = PsGetCurrentThreadId();
-    Vcb->VcbResourceOwnerStackCount = OwnerStackCount;
-    RtlCopyMemory(Vcb->VcbResourceOwnerStack,
-                  OwnerStack,
-                  sizeof(Vcb->VcbResourceOwnerStack));
+    for (OwnerIndex = 0; OwnerIndex < UDF_VCB_RESOURCE_OWNER_COUNT; OwnerIndex++) {
+        PUDF_VCB_RESOURCE_OWNER Owner = &Vcb->VcbResourceOwners[OwnerIndex];
+        if (Owner->AcquisitionCount == 0) {
+            if (FreeOwnerIndex == UDF_VCB_RESOURCE_OWNER_COUNT) {
+                FreeOwnerIndex = OwnerIndex;
+            }
+        } else if (Owner->Thread == CurrentThread) {
+            Owner->AcquisitionCount++;
+            KeReleaseSpinLock(&Vcb->VcbResourceOwnerStackLock, OldIrql);
+            return;
+        }
+    }
+
+    if (FreeOwnerIndex < UDF_VCB_RESOURCE_OWNER_COUNT) {
+        PUDF_VCB_RESOURCE_OWNER Owner = &Vcb->VcbResourceOwners[FreeOwnerIndex];
+        Owner->Thread = CurrentThread;
+        Owner->AcquisitionCount = 1;
+        Owner->StackCount = OwnerStackCount;
+        RtlCopyMemory(Owner->Stack, OwnerStack, sizeof(Owner->Stack));
+    } else {
+        Vcb->VcbResourceOwnerOverflowCount++;
+    }
+    KeReleaseSpinLock(&Vcb->VcbResourceOwnerStackLock, OldIrql);
+}
+
+VOID
+UDFReleaseVcbResource(
+    _Inout_ PVCB Vcb
+    )
+{
+    ULONG OwnerIndex;
+    PVOID CurrentThread = PsGetCurrentThread();
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Vcb->VcbResourceOwnerStackLock, &OldIrql);
+    ExReleaseResourceLite(&Vcb->VcbResource);
+    for (OwnerIndex = 0; OwnerIndex < UDF_VCB_RESOURCE_OWNER_COUNT; OwnerIndex++) {
+        PUDF_VCB_RESOURCE_OWNER Owner = &Vcb->VcbResourceOwners[OwnerIndex];
+        if (Owner->Thread == CurrentThread && Owner->AcquisitionCount != 0) {
+            if (--Owner->AcquisitionCount == 0) {
+                RtlZeroMemory(Owner, sizeof(*Owner));
+            }
+            break;
+        }
+    }
     KeReleaseSpinLock(&Vcb->VcbResourceOwnerStackLock, OldIrql);
 }
 #endif

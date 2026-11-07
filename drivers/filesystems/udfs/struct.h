@@ -570,6 +570,17 @@ enum VCB_CONDITION {
     VcbDismountInProgress
 };
 
+#ifdef UDF_FUNCTION_TIMING
+#define UDF_VCB_RESOURCE_OWNER_COUNT 16
+#define UDF_VCB_RESOURCE_OWNER_STACK_DEPTH 8
+typedef struct _UDF_VCB_RESOURCE_OWNER {
+    PVOID Thread;
+    ULONG AcquisitionCount;
+    USHORT StackCount;
+    PVOID Stack[UDF_VCB_RESOURCE_OWNER_STACK_DEPTH];
+} UDF_VCB_RESOURCE_OWNER, *PUDF_VCB_RESOURCE_OWNER;
+#endif
+
 struct VCB {
 
     struct UDFIdentifier NodeIdentifier;
@@ -644,9 +655,8 @@ struct VCB {
     ERESOURCE                           VcbResource;
 #ifdef UDF_FUNCTION_TIMING
     KSPIN_LOCK                          VcbResourceOwnerStackLock;
-    HANDLE                              VcbResourceOwnerThread;
-    PVOID                               VcbResourceOwnerStack[8];
-    USHORT                              VcbResourceOwnerStackCount;
+    UDF_VCB_RESOURCE_OWNER             VcbResourceOwners[UDF_VCB_RESOURCE_OWNER_COUNT];
+    ULONG                               VcbResourceOwnerOverflowCount;
 #endif
     ERESOURCE                           BitMapResource1;
     // serializes growth of the UDF 2.50 metadata file
