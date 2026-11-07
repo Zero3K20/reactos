@@ -176,9 +176,9 @@ typedef struct _UDF_PARALLEL_DATA_DRAIN {
     PDEVICE_OBJECT RealDevice;
     PFCB* Files;
     LONG Count;
-    volatile LONG Next;
-    volatile LONG Visited;
-    volatile LONG FirstError;
+    LONG Next;
+    LONG Visited;
+    LONG FirstError;
     HANDLE Thread[UDF_DATA_DRAIN_HELPERS];
     uint32 Threads;
 } UDF_PARALLEL_DATA_DRAIN;

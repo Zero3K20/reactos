@@ -1287,6 +1287,8 @@ UDFDeleteVCB(
     )
 {
     LARGE_INTEGER delay;
+    KIRQL SavedIrql;
+    ULONG PostedRequestCount;
     UDFPrint(("UDFDeleteVCB\n"));
 
     PVOLUME_DEVICE_OBJECT Vdo = (PVOLUME_DEVICE_OBJECT)CONTAINING_RECORD(Vcb,
@@ -1294,8 +1296,13 @@ UDFDeleteVCB(
                                                                          Vcb);
 
     delay.QuadPart = -500000; // 0.05 sec
-    while(Vdo->PostedRequestCount) {
-        UDFPrint(("UDFDeleteVCB: PostedRequestCount = %d\n", Vdo->PostedRequestCount));
+    for (;;) {
+        KeAcquireSpinLock(&Vdo->OverflowQueueSpinLock, &SavedIrql);
+        PostedRequestCount = Vdo->PostedRequestCount;
+        KeReleaseSpinLock(&Vdo->OverflowQueueSpinLock, SavedIrql);
+        if (!PostedRequestCount)
+            break;
+        UDFPrint(("UDFDeleteVCB: PostedRequestCount = %d\n", PostedRequestCount));
         // spin until all queues IRPs are processed
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
         delay.QuadPart -= 500000; // grow delay 0.05 sec

@@ -95,9 +95,9 @@ struct UDF_IO_CONTEXT {
 
     //  Count of outstanding IRPs (multi-run case).
 
-    volatile LONG IrpCount;
+    LONG IrpCount;
     PIRP MasterIrp;
-    volatile NTSTATUS Status;
+    NTSTATUS Status;
     BOOLEAN AllocatedContext;
     /* Physical transfer length; independent of the logical async result. */
     ULONG ExpectedByteCount;
@@ -741,7 +741,7 @@ struct VCB {
     uint32          origIntegrityType;
     /* First OPEN write can finish before its device barrier. Other writers
      * must wait for that barrier before using the already-OPEN fast path. */
-    volatile LONG   IntegrityOpenPending;
+    LONG   IntegrityOpenPending;
     extent_ad       LVid_loc;
     // Optional two-slot journal in unused sectors of the LVID extent.
     uint32          LvidJournalSlot[2];
@@ -925,7 +925,7 @@ struct VOLUME_DEVICE_OBJECT {
     // a certain threshold, put the request on the overflow queue to be
     // executed later.
 
-    __volatile ULONG PostedRequestCount;
+    ULONG PostedRequestCount;
 
     // The following field indicates the number of IRP's waiting
     // to be serviced in the overflow queue.

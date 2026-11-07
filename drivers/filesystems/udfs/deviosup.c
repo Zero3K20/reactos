@@ -1341,7 +1341,8 @@ UDFMultiSyncCompletionRoutine(
     if (InterlockedDecrement(&IoContext->IrpCount) == 0) {
 
         //
-        //  All associated IRPs done — propagate status to master.
+        //  The interlocked decrement orders all completions' status updates
+        //  before the last completion propagates the status to the master.
         //
 
         IoContext->MasterIrp->IoStatus.Status = IoContext->Status;
