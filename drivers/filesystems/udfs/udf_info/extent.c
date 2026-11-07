@@ -35,14 +35,14 @@ UDFExtentOffsetToLba(
     OUT uint32* Index
     )
 {
-    uint32 j=0, l, d, BSh = Vcb->SectorShift;
+    uint32 j=0, l, d, ExtentLength, BSh = Vcb->SectorShift;
     uint32 Offs;
     uint32 i=0, BOffset; // block nums
 
     BOffset = (uint32)(Offset >> BSh);
     // scan extent table for suitable range (frag)
     ExtPrint(("ExtLen %x\n", Extent->extLength));
-    while(i+(d = (l = (Extent->extLength & UDF_EXTENT_LENGTH_MASK)) >> BSh) <= BOffset) {
+    while(i+(d = (l = ((ExtentLength = Extent->extLength) & UDF_EXTENT_LENGTH_MASK)) >> BSh) <= BOffset) {
 
         if (!l) {
             if (Index) (*Index) = j-1;
@@ -66,11 +66,11 @@ UDFExtentOffsetToLba(
     if (AvailLength)
         (*AvailLength) = l - Offs;// bytes to EO frag
     if (Flags)
-        (*Flags) = (Extent->extLength >> 30);
+        (*Flags) = (ExtentLength >> 30);
     if (Index)
         (*Index) = j;
 
-    ASSERT(((Extent->extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) || Extent->extLocation);
+    ASSERT(((ExtentLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) || Extent->extLocation);
 
     return Extent->extLocation + BOffset;// 1st Lba
 } // end UDFExtentOffsetToLba()
@@ -239,20 +239,6 @@ UDFMergeMappings(
     return NewExt;
 } // end UDFMergeMappings()
 
-PSHORT_AD
-GetNextAllocDesc(
-    IN PSHORT_AD AllocDesc,
-    IN uint32 AllocDescsCount,
-    IN uint32 ExtentIndex
-    )
-{
-    if (ExtentIndex < AllocDescsCount) {
-        return &AllocDesc[ExtentIndex];
-    }
-
-    return NULL;
-}
-
 /*
     This routine builds file mapping according to ShortAllocDesc (SHORT_AD)
     array
@@ -299,10 +285,15 @@ UDFShortAllocDescToMapping(
 
     PEXTENT_MAP ExtentNext = Extent;
 
-    while ((AllocDesc = GetNextAllocDesc(AllocDescs, AllocDescsCount, AllocDescsIndex))) {
+    while (AllocDescs && AllocDescsIndex < AllocDescsCount) {
 
-        uint32 type = AllocDesc->extLength >> 30;
-        uint32 len  = AllocDesc->extLength & UDF_EXTENT_LENGTH_MASK;
+        uint32 descriptorLength;
+        uint32 type, len;
+
+        AllocDesc = &AllocDescs[AllocDescsIndex];
+        descriptorLength = AllocDesc->extLength;
+        type = descriptorLength >> 30;
+        len = descriptorLength & UDF_EXTENT_LENGTH_MASK;
         ExtPrint(("ShExt: type %x, loc %x, len %x\n", type, AllocDesc->extPosition, len));
 
         if (type == EXTENT_NEXT_EXTENT_ALLOCDESC) {
