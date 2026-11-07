@@ -556,8 +556,12 @@ CowQuiesce(PVCB Vcb, PUDF_COW Cow)
 
     delay.QuadPart = -10LL * 1000 * 20;
     for (i = 0; i < UDF_COW_QUIESCE_TRIES; i++) {
-        if (ExAcquireResourceExclusiveLite(&Vcb->VcbResource, FALSE))
+        if (ExAcquireResourceExclusiveLite(&Vcb->VcbResource, FALSE)) {
+#ifdef UDF_FUNCTION_TIMING
+            UDFRecordVcbResourceOwnerStack(Vcb);
+#endif
             return TRUE;
+        }
         if (Cow && Cow->Stop)
             return FALSE;
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
@@ -620,6 +624,9 @@ UDFCowSync(
     KeEnterCriticalRegion();
     if (!ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
         ExAcquireResourceExclusiveLite(&Vcb->VcbResource, TRUE);
+#ifdef UDF_FUNCTION_TIMING
+        UDFRecordVcbResourceOwnerStack(Vcb);
+#endif
         held = TRUE;
     }
     status = UDFCowCheckpoint(IrpContext, Vcb, FALSE);

@@ -1118,6 +1118,9 @@ UDFInitializeVCB(
     _SEH2_TRY {
 
         ExInitializeResourceLite(&Vcb->VcbResource);
+#ifdef UDF_FUNCTION_TIMING
+        KeInitializeSpinLock(&Vcb->VcbResourceOwnerStackLock);
+#endif
         ExInitializeResourceLite(&Vcb->BitMapResource1);
         ExInitializeResourceLite(&Vcb->MetadataGrowResource);
         ExInitializeResourceLite(&Vcb->CowResource);

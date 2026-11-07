@@ -642,6 +642,12 @@ struct VCB {
 
     // a resource to protect the fields contained within the VCB
     ERESOURCE                           VcbResource;
+#ifdef UDF_FUNCTION_TIMING
+    KSPIN_LOCK                          VcbResourceOwnerStackLock;
+    HANDLE                              VcbResourceOwnerThread;
+    PVOID                               VcbResourceOwnerStack[8];
+    USHORT                              VcbResourceOwnerStackCount;
+#endif
     ERESOURCE                           BitMapResource1;
     // serializes growth of the UDF 2.50 metadata file
     ERESOURCE                           MetadataGrowResource;
@@ -1246,4 +1252,3 @@ typedef struct _CDROM_TOC_LARGE {
 } CDROM_TOC_LARGE;
 
 #endif /* _UDF_STRUCTURES_H_ */ // has this file been included?
-

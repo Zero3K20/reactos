@@ -1745,6 +1745,9 @@ Return Value:
     PVOID ResourceAcquireStack[8];
     USHORT ResourceAcquireFrameCount;
     ULONG ResourceAcquireFrame;
+    PVOID ResourceVcbOwnerStack[8];
+    USHORT ResourceVcbOwnerStackCount = 0;
+    HANDLE ResourceVcbOwnerThread = NULL;
 #endif
     PAGED_CODE();
 
@@ -1766,6 +1769,25 @@ Return Value:
         ResourceAcquireCaller = UDF_TRACE_CALLER();
         ResourceAcquireOwner =
             (PVOID)Resource->OwnerEntry.OwnerThread;
+        if (IrpContext->Vcb != NULL &&
+            Resource == &IrpContext->Vcb->VcbResource &&
+            ResourceAcquireOwner != NULL) {
+            KIRQL OldIrql;
+            KeAcquireSpinLock(&IrpContext->Vcb->VcbResourceOwnerStackLock,
+                              &OldIrql);
+            if (IrpContext->Vcb->VcbResourceOwnerThread ==
+                ResourceAcquireOwner) {
+                ResourceVcbOwnerThread =
+                    IrpContext->Vcb->VcbResourceOwnerThread;
+                ResourceVcbOwnerStackCount =
+                    IrpContext->Vcb->VcbResourceOwnerStackCount;
+                RtlCopyMemory(ResourceVcbOwnerStack,
+                              IrpContext->Vcb->VcbResourceOwnerStack,
+                              sizeof(ResourceVcbOwnerStack));
+            }
+            KeReleaseSpinLock(&IrpContext->Vcb->VcbResourceOwnerStackLock,
+                              OldIrql);
+        }
     }
 #endif
     switch (Type) {
@@ -1814,7 +1836,7 @@ Return Value:
                                 &ResourceAcquireStartFields);
             RtlTimeToTimeFields(&ResourceAcquireEndTime,
                                 &ResourceAcquireEndFields);
-            DbgPrint("UDF lock wait: thread=%p caller=%p ownerSnapshot=%p resource=%p mode=%s acquired=%u start=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ end=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ took %I64u us\n",
+            DbgPrint("UDF lock wait: thread=%p caller=%p ownerSnapshot=%p resource=%p mode=%s acquired=%u start=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ end=%04u-%02u-%02uT%02u:%02u:%02u.%03uZ qpc_start=%I64u qpc_end=%I64u qpc_freq=%I64u took %I64u us\n",
                      ResourceAcquireThreadId,
                      ResourceAcquireCaller,
                      ResourceAcquireOwner,
@@ -1835,6 +1857,9 @@ Return Value:
                      (ULONG)ResourceAcquireEndFields.Minute,
                      (ULONG)ResourceAcquireEndFields.Second,
                      (ULONG)ResourceAcquireEndFields.Milliseconds,
+                     (ULONGLONG)ResourceAcquireStart.QuadPart,
+                     (ULONGLONG)ResourceAcquireEnd.QuadPart,
+                     (ULONGLONG)ResourceAcquireFrequency.QuadPart,
                      ResourceAcquireElapsedUs);
 
             ResourceAcquireFrameCount = RtlCaptureStackBackTrace(
@@ -1850,6 +1875,20 @@ Return Value:
                          ResourceAcquireFrame,
                          ResourceAcquireStack[ResourceAcquireFrame]);
             }
+            if (ResourceVcbOwnerThread != NULL) {
+                DbgPrint("UDF VCB owner acquisition stack (captured at lock acquisition, not live): thread=%p resource=%p frames=%u\n",
+                         ResourceVcbOwnerThread,
+                         Resource,
+                         (ULONG)ResourceVcbOwnerStackCount);
+                for (ResourceAcquireFrame = 0;
+                     ResourceAcquireFrame < ResourceVcbOwnerStackCount;
+                     ResourceAcquireFrame++) {
+                    DbgPrint("UDF VCB owner stack: thread=%p frame=%lu address=%p\n",
+                             ResourceVcbOwnerThread,
+                             ResourceAcquireFrame,
+                             ResourceVcbOwnerStack[ResourceAcquireFrame]);
+                }
+            }
         }
     }
 #endif
@@ -1864,6 +1903,52 @@ Return Value:
 
     return Acquired;
 }
+
+#ifdef UDF_FUNCTION_TIMING
+BOOLEAN
+UDFAcquireVcbResource(
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PVCB Vcb,
+    _In_ BOOLEAN IgnoreWait,
+    _In_ enum TYPE_OF_ACQUIRE Type
+    )
+{
+    BOOLEAN Acquired;
+
+    Acquired = UDFAcquireResource(IrpContext,
+                                  &Vcb->VcbResource,
+                                  IgnoreWait,
+                                  Type);
+    if (Acquired) {
+        UDFRecordVcbResourceOwnerStack(Vcb);
+    }
+    return Acquired;
+}
+
+VOID
+UDFRecordVcbResourceOwnerStack(
+    _Inout_ PVCB Vcb
+    )
+{
+    PVOID OwnerStack[RTL_NUMBER_OF(Vcb->VcbResourceOwnerStack)];
+    USHORT OwnerStackCount;
+    KIRQL OldIrql;
+
+    RtlZeroMemory(OwnerStack, sizeof(OwnerStack));
+    OwnerStackCount = RtlCaptureStackBackTrace(
+        0,
+        RTL_NUMBER_OF(OwnerStack),
+        OwnerStack,
+        NULL);
+    KeAcquireSpinLock(&Vcb->VcbResourceOwnerStackLock, &OldIrql);
+    Vcb->VcbResourceOwnerThread = PsGetCurrentThreadId();
+    Vcb->VcbResourceOwnerStackCount = OwnerStackCount;
+    RtlCopyMemory(Vcb->VcbResourceOwnerStack,
+                  OwnerStack,
+                  sizeof(Vcb->VcbResourceOwnerStack));
+    KeReleaseSpinLock(&Vcb->VcbResourceOwnerStackLock, OldIrql);
+}
+#endif
 
 VOID
 UDFFinishIoAtEof(

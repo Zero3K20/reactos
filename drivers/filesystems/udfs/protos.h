@@ -1396,11 +1396,36 @@ UDFAcquireResource(
     _In_ enum TYPE_OF_ACQUIRE Type
     );
 
+#ifdef UDF_FUNCTION_TIMING
+_Requires_lock_held_(_Global_critical_region_)
+_When_(Type == AcquireExclusive && return != FALSE, _Acquires_exclusive_lock_(Vcb->VcbResource))
+_When_(Type == AcquireShared && return != FALSE, _Acquires_shared_lock_(Vcb->VcbResource))
+_When_(IgnoreWait == FALSE, _Post_satisfies_(return == TRUE))
+BOOLEAN
+UDFAcquireVcbResource(
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PVCB Vcb,
+    _In_ BOOLEAN IgnoreWait,
+    _In_ enum TYPE_OF_ACQUIRE Type
+    );
+
+VOID
+UDFRecordVcbResourceOwnerStack(
+    _Inout_ PVCB Vcb
+    );
+
 #define UDFAcquireVcbExclusive(IC,V,I)                                                  \
-    UDFAcquireResource( (IC), &(V)->VcbResource, (I), AcquireExclusive )
+    UDFAcquireVcbResource((IC), (V), (I), AcquireExclusive)
+
+#define UDFAcquireVcbShared(IC,V,I)                                                     \
+    UDFAcquireVcbResource((IC), (V), (I), AcquireShared)
+#else
+#define UDFAcquireVcbExclusive(IC,V,I)                                                  \
+    UDFAcquireResource((IC), &(V)->VcbResource, (I), AcquireExclusive)
 
 #define UDFAcquireVcbShared(IC,V,I)                                                     \
     UDFAcquireResource((IC), &(V)->VcbResource, (I), AcquireShared)
+#endif
 
 #define UDFReleaseVcb(IC,V)                                                             \
     ExReleaseResourceLite(&(V)->VcbResource)
