@@ -877,6 +877,7 @@ UDFAllocMetadataExtent(
     uint32 blocks, bit, i, phys, pass, first, seenBlocks, limit;
     BOOLEAN growthAttempted = FALSE, widenAttempted = FALSE, limited;
     EXTENT_AD extent;
+    PCHAR bitmap, pendingAlloc;
 
     ExtInfo->Mapping = NULL;
     ExtInfo->Offset = 0;
@@ -891,6 +892,8 @@ UDFAllocMetadataExtent(
     blocks = (uint32)((Length + Vcb->SectorSize - 1) >> Vcb->SectorShift);
 retry_after_growth:
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    bitmap = Vcb->MetadataBitmap;
+    pendingAlloc = Vcb->MetadataPendingAlloc;
     /* Copy-on-write covers only the start of the metadata area. */
     limit = min(UDFCowMetadataLimit(Vcb), Vcb->MetadataBitCount);
     limited = limit < Vcb->MetadataBitCount;
@@ -900,17 +903,17 @@ retry_after_growth:
            bit <= limit - blocks && (pass == 0 || bit < first);
            bit++) {
         /* Skip whole bytes of blocks in use without mapping each one. */
-        if (!(bit & 7) && !Vcb->MetadataBitmap[bit >> 3]) {
+        if (!(bit & 7) && !bitmap[bit >> 3]) {
             bit += 7;
             continue;
         }
-        if (!(Vcb->MetadataBitmap[bit >> 3] & (1 << (bit & 7))))
+        if (!(bitmap[bit >> 3] & (1 << (bit & 7))))
             continue;
         phys = UDFMetadataLbaToPhys(Vcb, bit, NULL);
         if (phys == LBA_OUT_OF_EXTENT)
             continue;
-        for (i = 0; i < blocks; i++) {
-            if (!(Vcb->MetadataBitmap[(bit + i) >> 3] &
+        for (i = 1; i < blocks; i++) {
+            if (!(bitmap[(bit + i) >> 3] &
                   (1 << ((bit + i) & 7))) ||
                 UDFMetadataLbaToPhys(Vcb, bit + i, NULL) != phys + i)
                 break;
@@ -927,9 +930,9 @@ retry_after_growth:
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         for (i = 0; i < blocks; i++) {
-            Vcb->MetadataBitmap[(bit + i) >> 3] &=
+            bitmap[(bit + i) >> 3] &=
                 ~(1 << ((bit + i) & 7));
-            Vcb->MetadataPendingAlloc[(bit + i) >> 3] |=
+            pendingAlloc[(bit + i) >> 3] |=
                 (uint8)(1 << ((bit + i) & 7));
         }
         Vcb->MetadataFreeCount -= blocks;
