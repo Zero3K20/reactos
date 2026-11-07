@@ -1237,12 +1237,6 @@ UDFWriteInSector(
     int8* tmp_buff;
     NTSTATUS status;
 
-    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
-    if (!NT_SUCCESS(status)) {
-        *WrittenBytes = 0;
-        return status;
-    }
-
     if (Vcb->CDR_Mode) {
         if (Vcb->SessionEndLba < Lba)
             Vcb->SessionEndLba = Lba;
