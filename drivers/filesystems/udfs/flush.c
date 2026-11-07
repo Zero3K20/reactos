@@ -569,48 +569,51 @@ UDFFlushVolume(
     ULONG ret_val = 0;
     IO_STATUS_BLOCK IoStatus;
     NTSTATUS Status;
+    NTSTATUS ReturnStatus = STATUS_SUCCESS;
     BOOLEAN CloseDeferred = FALSE;
 
     UDFPrint(("UDFFlushVolume: \n"));
 
     ASSERT_EXCLUSIVE_VCB(Vcb);
-    IoStatus.Status = STATUS_SUCCESS;
-    IoStatus.Information = 0;
-
-    Status = UDFTakeMetadataWritebackError(Vcb);
-    UDFFspClose(Vcb);
-    {
-        NTSTATUS current = UDFTakeMetadataWritebackError(Vcb);
-        if (NT_SUCCESS(Status))
-            Status = current;
-    }
-    if (!NT_SUCCESS(Status))
-        return Status;
+    UDFAcquireResourceExclusive(&Vcb->WriteIoResource, TRUE);
 
     _SEH2_TRY {
+        IoStatus.Status = STATUS_SUCCESS;
+        IoStatus.Information = 0;
+
+        Status = UDFTakeMetadataWritebackError(Vcb);
+        UDFFspClose(Vcb);
+        {
+            NTSTATUS current = UDFTakeMetadataWritebackError(Vcb);
+            if (NT_SUCCESS(Status))
+                Status = current;
+        }
+        if (!NT_SUCCESS(Status))
+            try_return(ReturnStatus = Status);
+
         if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
-            return 0;
+            try_return(ReturnStatus = STATUS_SUCCESS);
         if (Vcb->VcbCondition != VcbMounted)
-            return 0;
+            try_return(ReturnStatus = STATUS_SUCCESS);
 
         /* Closed handles can retain a live cache/section FILE_OBJECT and
          * never reach delayed close. Prepare their owned FE generations in
          * bounded cohorts; still drain Cc/data/tree before bitmap and LVID. */
         Status = UDFWritebackNewVolumeFiles(IrpContext,Vcb);
         if (!NT_SUCCESS(Status))
-            return Status;
+            try_return(ReturnStatus = Status);
 
         // NOTE: This function may also be invoked internally as part of
         // processing a shutdown request.
         ASSERT(Vcb->RootIndexFcb);
         ret_val |= UDFFlushADirectory(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo, &IoStatus, FlushFlags);
         if (!NT_SUCCESS(IoStatus.Status))
-            return IoStatus.Status;
+            try_return(ReturnStatus = IoStatus.Status);
 
         if (Vcb->MetadataBitmapModified) {
             NTSTATUS metadataStatus = UDFFlushMetadataBitmap(IrpContext, Vcb);
             if (!NT_SUCCESS(metadataStatus))
-                return metadataStatus;
+                try_return(ReturnStatus = metadataStatus);
         }
 
 //        if (UDFFlushIsBreaking(Vcb, FlushFlags))
@@ -621,19 +624,19 @@ UDFFlushVolume(
             if (Vcb->Cow) {
                 Status = UDFCowCheckpoint(IrpContext, Vcb, FALSE);
                 if (!NT_SUCCESS(Status))
-                    return Status;
+                    try_return(ReturnStatus = Status);
             }
         } else {
             /* Commit buffered metadata and return the disk to its home
              * layout before the volume is closed. */
             Status = UDFCowStop(IrpContext, Vcb);
             if (!NT_SUCCESS(Status))
-                return Status;
+                try_return(ReturnStatus = Status);
 
             // umount (this is internal operation, NT will "dismount" volume later)
             Status = UDFUmount__(IrpContext, Vcb, &CloseDeferred);
             if (!NT_SUCCESS(Status))
-                return Status;
+                try_return(ReturnStatus = Status);
 
             /* UDFUmount__ only issues its device barriers when the LVID or
              * bitmap changed. FE/FID/data sectors written above can still sit
@@ -641,7 +644,7 @@ UDFFlushVolume(
              * always finish a full flush with a barrier. */
             Status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
             if (!NT_SUCCESS(Status))
-                return Status;
+                try_return(ReturnStatus = Status);
 
             if (!CloseDeferred) {
                 UDFPreClrModified(Vcb);
@@ -654,9 +657,14 @@ UDFFlushVolume(
                 (VOID)UDFCowStart(IrpContext, Vcb);
         }
 
+try_exit:   NOTHING;
+
     } _SEH2_FINALLY {
-        ;
+        UDFReleaseResource(&Vcb->WriteIoResource);
     } _SEH2_END;
+
+    if (!NT_SUCCESS(ReturnStatus))
+        return ReturnStatus;
 
     return ret_val;
 } // end UDFFlushLogicalVolume()

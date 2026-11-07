@@ -1322,6 +1322,7 @@ UDFDeleteVCB(
     _SEH2_TRY {
         UDFPrint(("UDF: Delete resources\n"));
         UDFDeleteResource(&(Vcb->VcbResource));
+        UDFDeleteResource(&(Vcb->WriteIoResource));
         UDFDeleteResource(&(Vcb->BitMapResource1));
         UDFDeleteResource(&(Vcb->MetadataGrowResource));
         UDFCowTeardown(Vcb);
@@ -1855,4 +1856,3 @@ UDFWaitForIoAtEof(
 }
 
 #include "Include/regtools.c"
-

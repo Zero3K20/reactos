@@ -61,6 +61,7 @@ UDFCommonWrite(
     BOOLEAN                 PagingIoResourceAcquired = FALSE;
     BOOLEAN                 MainResourceAcquired = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
+    BOOLEAN                 WriteIoResourceAcquired = FALSE;
 
     BOOLEAN                 Wait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
@@ -243,6 +244,23 @@ UDFCommonWrite(
     }
 
     _SEH2_TRY {
+
+        /* Admit ordinary writes under the VCB resource, then keep a narrower
+         * gate for data I/O so cleanup and create operations are not serialized
+         * behind every sector request. Full-volume flushes take this gate
+         * exclusively before closing the LVID. */
+        if (!PagingIo && Fcb != Vcb->VolumeDasdFcb) {
+            UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+            VcbAcquired = TRUE;
+
+            if (!UDFAcquireResourceShared(&Vcb->WriteIoResource, Wait)) {
+                try_return(Status = STATUS_PENDING);
+            }
+            WriteIoResourceAcquired = TRUE;
+
+            UDFReleaseVcb(IrpContext, Vcb);
+            VcbAcquired = FALSE;
+        }
 
         // If this is a request at IRQL DISPATCH_LEVEL, then post the request
         if (IrpSp->MinorFunction & IRP_MN_DPC) {
@@ -806,6 +824,10 @@ try_exit:   NOTHING;
 
         if (MainResourceAcquired) {
             UDFReleaseFcb(IrpContext, Fcb);
+        }
+
+        if (WriteIoResourceAcquired) {
+            UDFReleaseResource(&Vcb->WriteIoResource);
         }
 
         if (VcbAcquired) {
