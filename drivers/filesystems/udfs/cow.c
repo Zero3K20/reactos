@@ -1152,31 +1152,88 @@ UDFCowTeardown(
  * File data copy-on-write.
  */
 
+static VOID
+CowAppendRelocatedExtent(
+    _Inout_ PEXTENT_MAP Mapping,
+    _Inout_ uint32* Count,
+    _In_ uint32 Location,
+    _In_ uint32 Length,
+    _In_ uint32 Flags,
+    _In_ uint32 SectorShift,
+    _In_ uint32 MaxExtentLength
+    )
+{
+    if (*Count) {
+        PEXTENT_MAP Previous = &Mapping[*Count - 1];
+        uint32 PreviousLength = Previous->extLength & UDF_EXTENT_LENGTH_MASK;
+        uint32 PreviousFlags = Previous->extLength >> 30;
+        BOOLEAN Contiguous = (Flags == EXTENT_NOT_RECORDED_NOT_ALLOCATED &&
+                              Previous->extLocation == 0 && Location == 0);
+
+        if (!Contiguous && Location >= Previous->extLocation) {
+            uint32 PreviousBlocks = PreviousLength >> SectorShift;
+            Contiguous = Previous->extLocation <= MAXULONG - PreviousBlocks &&
+                         Location == Previous->extLocation + PreviousBlocks;
+        }
+
+        if (PreviousFlags == Flags && Contiguous &&
+            PreviousLength <= MaxExtentLength &&
+            Length <= MaxExtentLength - PreviousLength) {
+            Previous->extLength = (PreviousLength + Length) | (Flags << 30);
+            return;
+        }
+    }
+
+    Mapping[*Count].extLocation = Location;
+    Mapping[*Count].extLength = Length | (Flags << 30);
+    (*Count)++;
+}
+
 /* Rebuild Old so the recorded blocks of [First, First + Count) come from
  * New, in order. Freed receives the old blocks that were replaced. Both
- * outputs are terminated mappings allocated here. Pure, so it can be
- * tested on the host. */
+ * outputs are terminated mappings allocated here. Adjacent compatible
+ * extents are coalesced during the rebuild, avoiding a second full mapping
+ * scan in UDFPackMapping for every small overwrite. */
 static NTSTATUS
 CowBuildRelocatedMap(PEXTENT_MAP Old, uint32 First, uint32 Count, PEXTENT_MAP New,
                      uint32 BSh, PEXTENT_MAP* Result, PEXTENT_MAP* Freed)
 {
     uint32 oldCount, newCount, i, out = 0, freed = 0, nr = 0, nrUsed = 0;
     uint32 pos = 0, end = First + Count;
+    uint32 overlapCount = 0;
+    uint32 maxExtentLength = (UDF_EXTENT_LENGTH_MASK >> BSh) << BSh;
+    SIZE_T maxMapEntries = (~(SIZE_T)0) / sizeof(EXTENT_MAP);
+    SIZE_T mapEntries;
     PEXTENT_MAP res, fr;
 
-    for (oldCount = 0; Old[oldCount].extLength & UDF_EXTENT_LENGTH_MASK; oldCount++)
-        ;
+    for (oldCount = 0; Old[oldCount].extLength & UDF_EXTENT_LENGTH_MASK; oldCount++) {
+        uint32 bytes = Old[oldCount].extLength & UDF_EXTENT_LENGTH_MASK;
+        uint32 blocks = (bytes + (1 << BSh) - 1) >> BSh;
+        uint32 start = pos;
+        pos += blocks;
+        if (pos > First && start < end &&
+            (Old[oldCount].extLength >> 30) == EXTENT_RECORDED_ALLOCATED)
+            overlapCount++;
+    }
     for (newCount = 0; New[newCount].extLength & UDF_EXTENT_LENGTH_MASK; newCount++)
         ;
-    res = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool,
-              (3 * oldCount + newCount + 4) * sizeof(EXTENT_MAP));
-    fr = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, (oldCount + 1) * sizeof(EXTENT_MAP));
+    if ((SIZE_T)oldCount >= maxMapEntries ||
+        (SIZE_T)newCount > maxMapEntries - (SIZE_T)oldCount - 1)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    mapEntries = (SIZE_T)oldCount + newCount + 1;
+    if ((SIZE_T)overlapCount > (maxMapEntries - mapEntries) / 2)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    mapEntries += (SIZE_T)overlapCount * 2;
+    res = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, mapEntries * sizeof(EXTENT_MAP));
+    fr = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool,
+                                       (overlapCount + 1) * sizeof(EXTENT_MAP));
     if (!res || !fr) {
         if (res) MyFreePool__(res);
         if (fr) MyFreePool__(fr);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+    pos = 0;
     for (i = 0; i < oldCount; i++) {
         uint32 bytes = Old[i].extLength & UDF_EXTENT_LENGTH_MASK;
         uint32 flags = Old[i].extLength & ~UDF_EXTENT_LENGTH_MASK;
@@ -1185,14 +1242,16 @@ CowBuildRelocatedMap(PEXTENT_MAP Old, uint32 First, uint32 Count, PEXTENT_MAP Ne
 
         pos = e;
         if (e <= First || s >= end || flags != (EXTENT_RECORDED_ALLOCATED << 30)) {
-            res[out++] = Old[i];
+            CowAppendRelocatedExtent(res, &out, Old[i].extLocation, bytes,
+                                     flags >> 30, BSh, maxExtentLength);
             continue;
         }
         a = max(s, First);
         b = min(e, end);
         if (a > s) {
-            res[out].extLocation = Old[i].extLocation;
-            res[out++].extLength = ((a - s) << BSh) | flags;
+            CowAppendRelocatedExtent(res, &out, Old[i].extLocation,
+                                     (a - s) << BSh, flags >> 30,
+                                     BSh, maxExtentLength);
         }
         fr[freed].extLocation = Old[i].extLocation + (a - s);
         fr[freed++].extLength = (b - a) << BSh;
@@ -1202,8 +1261,9 @@ CowBuildRelocatedMap(PEXTENT_MAP Old, uint32 First, uint32 Count, PEXTENT_MAP Ne
             uint32 have = ((New[nr].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh) - nrUsed;
             uint32 take = min(have << BSh, left);
             uint32 used = (take + (1 << BSh) - 1) >> BSh;
-            res[out].extLocation = New[nr].extLocation + nrUsed;
-            res[out++].extLength = take;    // recorded
+            CowAppendRelocatedExtent(res, &out, New[nr].extLocation + nrUsed,
+                                     take, EXTENT_RECORDED_ALLOCATED,
+                                     BSh, maxExtentLength);
             nrUsed += used;
             left -= take;
             if (nrUsed == ((New[nr].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh)) {
@@ -1212,8 +1272,9 @@ CowBuildRelocatedMap(PEXTENT_MAP Old, uint32 First, uint32 Count, PEXTENT_MAP Ne
             }
         }
         if (b < e) {
-            res[out].extLocation = Old[i].extLocation + (b - s);
-            res[out++].extLength = (bytes - ((b - s) << BSh)) | flags;
+            CowAppendRelocatedExtent(res, &out, Old[i].extLocation + (b - s),
+                                     bytes - ((b - s) << BSh),
+                                     flags >> 30, BSh, maxExtentLength);
         }
     }
     /* keep whatever follows the terminator (location of the last entry) */
@@ -1322,7 +1383,6 @@ UDFCowRelocateData(
      * flush rebuild its allocation descriptors. */
     dloc->DataLoc.Mapping = newMap;
     MyFreePool__(map);
-    UDFPackMapping(Vcb, &dloc->DataLoc);
     node->Gen = InterlockedIncrement((PLONG)&dloc->CowDataGen);
     dloc->DataLoc.Modified = TRUE;
     dloc->AllocLoc.Modified = TRUE;
