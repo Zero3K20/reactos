@@ -332,7 +332,7 @@ UDFBuildFileEntry(
     NTSTATUS status;
     EntityID* eID;
     uint32 l;
-    EXTENT_INFO _FEExtInfo;
+    EXTENT_INFO _FEExtInfo = {0};
     uint16* lcp;
 
     ASSERT(PartNum < Vcb->PartitionMaps);
@@ -655,6 +655,7 @@ UDFGetFileSizeFromDirNdx(
  * of L_AD, which must be a whole number of descriptors. */
 static uint32
 UDFInFEAllocDescLen(
+    IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
     IN uint16 IcbFlags
     )
@@ -664,7 +665,11 @@ UDFInFEAllocDescLen(
 
     if (!Dloc->AllocLoc.Length)
         return (uint32)(Dloc->DataLoc.Length);
-    Space = Dloc->AllocLoc.Mapping[0].extLength - Dloc->AllocLoc.Offset;
+    Space = min(Vcb->SectorSize,
+                Dloc->AllocLoc.Mapping[0].extLength & UDF_EXTENT_LENGTH_MASK);
+    if (Dloc->AllocLoc.Offset >= Space)
+        return (uint32)(Dloc->AllocLoc.Length);
+    Space -= Dloc->AllocLoc.Offset;
     if ((uint64)Dloc->AllocLoc.Length <= Space)
         return (uint32)(Dloc->AllocLoc.Length);
     switch (IcbFlags & ICB_FLAG_ALLOC_MASK) {
@@ -685,16 +690,14 @@ UDFSetAllocDescLen(
     uint16 Ident;
 
     ValidateFileInfo(FileInfo);
-    UNREFERENCED_PARAMETER(Vcb);
-
     FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
     if (Ident == TID_FILE_ENTRY) {
         PFILE_ENTRY fe = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        fe->lengthAllocDescs = UDFInFEAllocDescLen(FileInfo, fe->icbTag.flags);
+        fe->lengthAllocDescs = UDFInFEAllocDescLen(Vcb, FileInfo, fe->icbTag.flags);
     } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        fe->lengthAllocDescs = UDFInFEAllocDescLen(FileInfo, fe->icbTag.flags);
+        fe->lengthAllocDescs = UDFInFEAllocDescLen(Vcb, FileInfo, fe->icbTag.flags);
     }
 } // end UDFSetAllocDescLen()
 
@@ -5702,17 +5705,8 @@ UDFSerializeFEBlock(
     ) {
         RtlZeroMemory(FEBuf + FELen + TailLen, Vcb->SectorSize - FELen - TailLen);
         WriteLen = Vcb->SectorSize;
-    } else if (TailLen) {
-        /* The descriptors (or inline data) recorded in the entry do not
-         * fit in its block: an in-between state, for example inline data
-         * already grown but not yet moved out. Writing it would leave an
-         * entry whose CRC covers less than its own descriptors, which
-         * recovery rightly rejects. Keep the old entry on disk; it is
-         * still marked modified and is written once it is consistent. */
-        UDFPrint(("UDF: FE %x not written, %x+%x bytes do not fit a block\n",
-                  lba, FELen, TailLen));
-        return 0;
     } else {
+        TailLen = 0;
         WriteLen = (uint32)(Dloc->FELoc.Length);
     }
 
@@ -5736,11 +5730,6 @@ UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return status;
     }
     WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
-    if (!WriteLen) {
-        /* Not consistent yet (see UDFSerializeFEBlock): nothing written,
-         * the caller keeps the entry modified. */
-        return STATUS_PENDING;
-    }
     /* A failed or short write may have replaced part of the old sector.
      * It must never leave an eligible old attribute-only checkpoint. */
     UDFDirectoryFEWriteStarting(Dloc);
@@ -5816,11 +5805,6 @@ UDFWriteFileData(
         return STATUS_SUCCESS;
     }
     status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
-    if (status == STATUS_PENDING) {
-        Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
-        *WrittenBytes = Length;
-        return STATUS_SUCCESS;
-    }
 
     if (NT_SUCCESS(status)) {
         *WrittenBytes = Length;
@@ -6028,18 +6012,13 @@ retry_flush_FE:
             return STATUS_SUCCESS;
         }
         status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
-        if (status == STATUS_PENDING) {
-            /* left modified; written once consistent */
-            return STATUS_SUCCESS;
-        }
-
         if (!NT_SUCCESS(status)) {
             UDFPrint(("  FlushFE: UDFWriteExtent(2) failed (%x)\n", status));
             if (status == STATUS_DEVICE_DATA_ERROR) {
 relocate_FE:
                 UDFPrint(("  try to relocate\n"));
 
-                EXTENT_INFO _FEExtInfo;
+                EXTENT_INFO _FEExtInfo = {0};
                 // calculate the length required
 
                 // allocate block for FE
