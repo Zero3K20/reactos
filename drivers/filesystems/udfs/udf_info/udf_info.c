@@ -5702,8 +5702,17 @@ UDFSerializeFEBlock(
     ) {
         RtlZeroMemory(FEBuf + FELen + TailLen, Vcb->SectorSize - FELen - TailLen);
         WriteLen = Vcb->SectorSize;
+    } else if (TailLen) {
+        /* The descriptors (or inline data) recorded in the entry do not
+         * fit in its block: an in-between state, for example inline data
+         * already grown but not yet moved out. Writing it would leave an
+         * entry whose CRC covers less than its own descriptors, which
+         * recovery rightly rejects. Keep the old entry on disk; it is
+         * still marked modified and is written once it is consistent. */
+        UDFPrint(("UDF: FE %x not written, %x+%x bytes do not fit a block\n",
+                  lba, FELen, TailLen));
+        return 0;
     } else {
-        TailLen = 0;
         WriteLen = (uint32)(Dloc->FELoc.Length);
     }
 
@@ -5727,6 +5736,11 @@ UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return status;
     }
     WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
+    if (!WriteLen) {
+        /* Not consistent yet (see UDFSerializeFEBlock): nothing written,
+         * the caller keeps the entry modified. */
+        return STATUS_PENDING;
+    }
     /* A failed or short write may have replaced part of the old sector.
      * It must never leave an eligible old attribute-only checkpoint. */
     UDFDirectoryFEWriteStarting(Dloc);
@@ -5802,6 +5816,11 @@ UDFWriteFileData(
         return STATUS_SUCCESS;
     }
     status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
+    if (status == STATUS_PENDING) {
+        Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+        *WrittenBytes = Length;
+        return STATUS_SUCCESS;
+    }
 
     if (NT_SUCCESS(status)) {
         *WrittenBytes = Length;
@@ -6009,6 +6028,10 @@ retry_flush_FE:
             return STATUS_SUCCESS;
         }
         status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
+        if (status == STATUS_PENDING) {
+            /* left modified; written once consistent */
+            return STATUS_SUCCESS;
+        }
 
         if (!NT_SUCCESS(status)) {
             UDFPrint(("  FlushFE: UDFWriteExtent(2) failed (%x)\n", status));
