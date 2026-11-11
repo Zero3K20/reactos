@@ -1401,24 +1401,47 @@ UDFCowRelocateDone(
 static VOID
 CowReleaseDataFrees(PVCB Vcb, PUDF_DATALOC_INFO Dloc, BOOLEAN All)
 {
-    PUDF_COW_FREE ready = NULL, keep = NULL, node, next;
+    PUDF_COW_FREE ready = NULL, readyTail = NULL;
+    PUDF_COW_FREE keep = NULL, keepTail = NULL;
+    PUDF_COW_FREE node, next;
     KIRQL irql;
 
-    if (!Dloc->CowDataFrees)
-        return;
+    /* Detach in constant time; traversing the list here would hold a
+     * spinlock at DISPATCH_LEVEL for as long as it takes to classify it. */
     KeAcquireSpinLock(&Vcb->CowDataLock, &irql);
-    for (node = Dloc->CowDataFrees; node; node = next) {
+    node = Dloc->CowDataFrees;
+    Dloc->CowDataFrees = NULL;
+    KeReleaseSpinLock(&Vcb->CowDataLock, irql);
+
+    if (!node)
+        return;
+
+    for (; node; node = next) {
         next = node->Next;
+        node->Next = NULL;
         if (All || node->Gen - Dloc->CowDataGenBuilt <= 0) {
-            node->Next = ready;
-            ready = node;
+            if (readyTail)
+                readyTail->Next = node;
+            else
+                ready = node;
+            readyTail = node;
         } else {
-            node->Next = keep;
-            keep = node;
+            if (keepTail)
+                keepTail->Next = node;
+            else
+                keep = node;
+            keepTail = node;
         }
     }
-    Dloc->CowDataFrees = keep;
-    KeReleaseSpinLock(&Vcb->CowDataLock, irql);
+
+    /* Preserve entries queued while the detached list was being examined. */
+    if (keepTail) {
+        KeAcquireSpinLock(&Vcb->CowDataLock, &irql);
+        keepTail->Next = Dloc->CowDataFrees;
+        Dloc->CowDataFrees = keep;
+        KeReleaseSpinLock(&Vcb->CowDataLock, irql);
+    }
+
     /* With copy-on-write on these wait two checkpoints in cow.c. */
     for (node = ready; node; node = next) {
         next = node->Next;

@@ -106,6 +106,7 @@ typedef FILE_ID                     *PFILE_ID;
 #include "Include/regtools.h"
 #include "Include/udf_reg.h"
 #include "struct.h"
+#include "udf_info/udf_hash.h"
 #ifdef UDF_METADATA_BATCH_DIAGNOSTICS
 #define UDF_METADATA_COUNT(v,n) InterlockedIncrement(&(v)->MetadataBatchDiag[n])
 #else
@@ -414,4 +415,3 @@ UdfGetFidFromLbAddr(lb_addr lbAddr)
 }
 
 #endif  // _UDF_UDF_H_
-

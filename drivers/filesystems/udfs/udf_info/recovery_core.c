@@ -1,4 +1,5 @@
 #include "recovery_core.h"
+#include "udf_hash.h"
 
 #include <string.h>
 
@@ -830,7 +831,7 @@ RecoveryName(const uint8_t *fid, uint8_t name[255], uint32_t *length,
     step = encoded[0] == 16 ? 2 : 1;
     if ((bytes - 1) % step) return UdfsRecoveryProbeCorrupt;
     *length = 0;
-    *hash = 2166136261U;
+    *hash = 0;
     for (i = 1; i < bytes; i += step) {
         uint32_t value = step == 2 ?
             ((uint32_t)encoded[i] << 8) | encoded[i + 1] : encoded[i];
@@ -839,7 +840,7 @@ RecoveryName(const uint8_t *fid, uint8_t name[255], uint32_t *length,
             return UdfsRecoveryProbeCorrupt;
         if (value >= 'a' && value <= 'z') value -= 'a' - 'A';
         name[(*length)++] = (uint8_t)value;
-        *hash = (*hash ^ value) * 16777619U;
+        *hash = UDFHashCharacter(*hash, value);
     }
     if ((*length == 1 && name[0] == '.') ||
         (*length == 2 && name[0] == '.' && name[1] == '.'))

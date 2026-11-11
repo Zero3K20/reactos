@@ -355,6 +355,20 @@ UDFDirIndexScan(
 /*
     This routine calculates hashes for directory search
  */
+/* Hash case-folded characters; exact name comparisons handle collisions. */
+uint32
+UDFHashUnicodeString(
+    IN PUNICODE_STRING Name
+    )
+{
+    uint32 Hash = 0;
+    ULONG i;
+
+    for (i = 0; i < Name->Length / sizeof(WCHAR); i++)
+        Hash = UDFHashCharacter(Hash, RtlDowncaseUnicodeChar(Name->Buffer[i]));
+    return Hash;
+}
+
 uint8
 UDFBuildHashEntry(
     IN PVCB Vcb,
@@ -377,7 +391,7 @@ UDFBuildHashEntry(
     }
 
     if (Mask & HASH_POSIX)
-        hashes->hPosix = crc32((uint8*)(Name->Buffer), Name->Length);
+        hashes->hPosix = UDFHashUnicodeString(Name);
 
     if (Mask & HASH_ULFN) {
 
@@ -386,7 +400,7 @@ UDFBuildHashEntry(
         UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
 
         RtlUpcaseUnicodeString(&UName, Name, FALSE);
-        hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
+        hashes->hLfn = UDFHashUnicodeString(&UName);
         ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
     }
 
@@ -400,7 +414,7 @@ UDFBuildHashEntry(
             UName.MaximumLength = sizeof(ShortNameBuffer);
             if (Name->Length <= UName.MaximumLength) {
                 RtlUpcaseUnicodeString(&UName, Name, FALSE);
-                hashes->hDos = crc32((uint8*)(UName.Buffer), UName.Length);
+                hashes->hDos = UDFHashUnicodeString(&UName);
             }
             RetFlags |= UDF_FI_FLAG_DOS;
         }
@@ -1237,23 +1251,120 @@ UDFGetDirIndexByFileInfo(
 /*
     Check if given FE is already in use
  */
+static ULONG
+UDFHashDlocLba(
+    IN ULONG Lba,
+    IN ULONG Count
+    )
+{
+    ULONG Hash = UDFHashCharacter(0, Lba & 0xffff);
+
+    Hash = UDFHashCharacter(Hash, Lba >> 16);
+    return Hash % Count;
+}
+
+static ULONG
+UDFHashDlocPtr(
+    IN PUDF_DATALOC_INFO Dloc,
+    IN ULONG Count
+    )
+{
+    ULONG_PTR Hash = (ULONG_PTR)Dloc;
+
+    ULONG Value = (ULONG)Hash;
+    ULONG Result = UDFHashCharacter(0, Value & 0xffff);
+    Result = UDFHashCharacter(Result, Value >> 16);
+#if defined(_WIN64)
+    Value = (ULONG)(Hash >> 32);
+    Result = UDFHashCharacter(Result, Value & 0xffff);
+    Result = UDFHashCharacter(Result, Value >> 16);
+#endif
+    return Result % Count;
+}
+
+static VOID
+UDFInsertDlocLbaHash(
+    IN PVCB Vcb,
+    IN ULONG Index
+    )
+{
+    ULONG Bucket = UDFHashDlocLba(Vcb->DlocList[Index].Lba, Vcb->DlocCount);
+
+    Vcb->DlocList[Index].LbaHashNext = Vcb->DlocLbaHash[Bucket];
+    Vcb->DlocLbaHash[Bucket] = Index;
+}
+
+static VOID
+UDFInsertDlocPtrHash(
+    IN PVCB Vcb,
+    IN ULONG Index
+    )
+{
+    ULONG Bucket = UDFHashDlocPtr(Vcb->DlocList[Index].Dloc, Vcb->DlocCount);
+
+    Vcb->DlocList[Index].DlocHashNext = Vcb->DlocPtrHash[Bucket];
+    Vcb->DlocPtrHash[Bucket] = Index;
+}
+
+static VOID
+UDFRemoveDlocLbaHash(
+    IN PVCB Vcb,
+    IN ULONG Index
+    )
+{
+    ULONG Bucket = UDFHashDlocLba(Vcb->DlocList[Index].Lba, Vcb->DlocCount);
+    PULONG Link = &Vcb->DlocLbaHash[Bucket];
+
+    while (*Link != Index) {
+        if (*Link == (ULONG)-1) {
+            ASSERT(FALSE);
+            return;
+        }
+        Link = &Vcb->DlocList[*Link].LbaHashNext;
+    }
+    *Link = Vcb->DlocList[Index].LbaHashNext;
+    Vcb->DlocList[Index].LbaHashNext = (ULONG)-1;
+}
+
+static VOID
+UDFRemoveDlocPtrHash(
+    IN PVCB Vcb,
+    IN ULONG Index
+    )
+{
+    ULONG Bucket = UDFHashDlocPtr(Vcb->DlocList[Index].Dloc, Vcb->DlocCount);
+    PULONG Link = &Vcb->DlocPtrHash[Bucket];
+
+    while (*Link != Index) {
+        if (*Link == (ULONG)-1) {
+            ASSERT(FALSE);
+            return;
+        }
+        Link = &Vcb->DlocList[*Link].DlocHashNext;
+    }
+    *Link = Vcb->DlocList[Index].DlocHashNext;
+    Vcb->DlocList[Index].DlocHashNext = (ULONG)-1;
+}
+
 LONG
 UDFFindDloc(
     IN PVCB Vcb,
     IN uint32 Lba
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
-    uint32 l;
+    LONG Found = -1;
+    ULONG Index;
 
-    if (!(DlocList = Vcb->DlocList) || !Lba) return (-1);
-    // scan FE location cache
-    l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
-        if (DlocList->Lba == Lba)
-            return i;
+    if (!Vcb->DlocList || !Vcb->DlocLbaHash || !Lba) return (-1);
+
+    Index = Vcb->DlocLbaHash[UDFHashDlocLba(Lba, Vcb->DlocCount)];
+    while (Index != (ULONG)-1) {
+        if (Vcb->DlocList[Index].Lba == Lba &&
+            (Found == -1 || Index < (ULONG)Found))
+            Found = Index;
+        Index = Vcb->DlocList[Index].LbaHashNext;
     }
-    return (-1);
+    return Found;
 } // end UDFFindDloc()
 
 /*
@@ -1265,15 +1376,15 @@ UDFFindDlocInMem(
     IN PUDF_DATALOC_INFO Dloc
     )
 {
-    PUDF_DATALOC_INDEX DlocList;
-    uint32 l;
+    ULONG Index;
 
-    if (!(DlocList = Vcb->DlocList) || !Dloc) return (-1);
-    // scan FE location cache
-    l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
-        if (DlocList->Dloc == Dloc)
-            return i;
+    if (!Vcb->DlocList || !Vcb->DlocPtrHash || !Dloc) return (-1);
+
+    Index = Vcb->DlocPtrHash[UDFHashDlocPtr(Dloc, Vcb->DlocCount)];
+    while (Index != (ULONG)-1) {
+        if (Vcb->DlocList[Index].Dloc == Dloc)
+            return Index;
+        Index = Vcb->DlocList[Index].DlocHashNext;
     }
     return (-1);
 } // end UDFFindDlocInMem()
@@ -1295,6 +1406,23 @@ UDFFindFreeDloc(
         if (!(Vcb->DlocList = (PUDF_DATALOC_INDEX)MyAllocatePoolTag__(NonPagedPool, sizeof(UDF_DATALOC_INDEX)*DLOC_LIST_GRANULARITY, MEM_DLOC_NDX_TAG)))
             return (-1);
         RtlZeroMemory(Vcb->DlocList, DLOC_LIST_GRANULARITY*sizeof(UDF_DATALOC_INDEX));
+        Vcb->DlocLbaHash = (PULONG)MyAllocatePoolTag__(NonPagedPool, sizeof(ULONG)*DLOC_LIST_GRANULARITY, MEM_DLOC_NDX_TAG);
+        Vcb->DlocPtrHash = (PULONG)MyAllocatePoolTag__(NonPagedPool, sizeof(ULONG)*DLOC_LIST_GRANULARITY, MEM_DLOC_NDX_TAG);
+        if (!Vcb->DlocLbaHash || !Vcb->DlocPtrHash) {
+            if (Vcb->DlocLbaHash)
+                MyFreePool__(Vcb->DlocLbaHash);
+            if (Vcb->DlocPtrHash)
+                MyFreePool__(Vcb->DlocPtrHash);
+            MyFreePool__(Vcb->DlocList);
+            Vcb->DlocList = NULL;
+            Vcb->DlocLbaHash = NULL;
+            Vcb->DlocPtrHash = NULL;
+            return (-1);
+        }
+        for (uint32 i = 0; i < DLOC_LIST_GRANULARITY; i++) {
+            Vcb->DlocLbaHash[i] = (ULONG)-1;
+            Vcb->DlocPtrHash[i] = (ULONG)-1;
+        }
         Vcb->DlocCount = DLOC_LIST_GRANULARITY;
         Vcb->DlocFreeHint = 0;
     }
@@ -1310,12 +1438,45 @@ UDFFindFreeDloc(
             return i;
     }
     // alloc some free entries
-    if (!MyReallocPool__((int8*)(Vcb->DlocList), Vcb->DlocCount*sizeof(UDF_DATALOC_INDEX),
-                     (int8**)&(Vcb->DlocList), (Vcb->DlocCount+DLOC_LIST_GRANULARITY)*sizeof(UDF_DATALOC_INDEX))) {
+    ULONG NewCount = Vcb->DlocCount + DLOC_LIST_GRANULARITY;
+    PULONG NewLbaHash = (PULONG)MyAllocatePoolTag__(NonPagedPool, sizeof(ULONG)*NewCount, MEM_DLOC_NDX_TAG);
+    PULONG NewPtrHash = (PULONG)MyAllocatePoolTag__(NonPagedPool, sizeof(ULONG)*NewCount, MEM_DLOC_NDX_TAG);
+    if (!NewLbaHash || !NewPtrHash) {
+        if (NewLbaHash)
+            MyFreePool__(NewLbaHash);
+        if (NewPtrHash)
+            MyFreePool__(NewPtrHash);
         return (-1);
     }
-    RtlZeroMemory(&(Vcb->DlocList[Vcb->DlocCount]), DLOC_LIST_GRANULARITY*sizeof(UDF_DATALOC_INDEX));
-    Vcb->DlocCount += DLOC_LIST_GRANULARITY;
+    for (uint32 i = 0; i < NewCount; i++) {
+        NewLbaHash[i] = (ULONG)-1;
+        NewPtrHash[i] = (ULONG)-1;
+    }
+    PUDF_DATALOC_INDEX NewDlocList;
+    if (!MyReallocPool__((int8*)(Vcb->DlocList), Vcb->DlocCount*sizeof(UDF_DATALOC_INDEX),
+                     (int8**)&NewDlocList, NewCount*sizeof(UDF_DATALOC_INDEX))) {
+        MyFreePool__(NewLbaHash);
+        MyFreePool__(NewPtrHash);
+        return (-1);
+    }
+    Vcb->DlocList = NewDlocList;
+    PULONG OldLbaHash = Vcb->DlocLbaHash;
+    PULONG OldPtrHash = Vcb->DlocPtrHash;
+    Vcb->DlocLbaHash = NewLbaHash;
+    Vcb->DlocPtrHash = NewPtrHash;
+    Vcb->DlocCount = NewCount;
+    for (uint32 i = 0; i < Vcb->DlocCount; i++) {
+        if (Vcb->DlocList[i].Dloc) {
+            UDFInsertDlocLbaHash(Vcb, i);
+            UDFInsertDlocPtrHash(Vcb, i);
+        } else {
+            Vcb->DlocList[i].LbaHashNext = (ULONG)-1;
+            Vcb->DlocList[i].DlocHashNext = (ULONG)-1;
+        }
+    }
+    MyFreePool__(OldLbaHash);
+    MyFreePool__(OldPtrHash);
+    RtlZeroMemory(&(Vcb->DlocList[NewCount - DLOC_LIST_GRANULARITY]), DLOC_LIST_GRANULARITY*sizeof(UDF_DATALOC_INDEX));
     return (Vcb->DlocCount - DLOC_LIST_GRANULARITY);
 } // end UDFFindFreeDloc()
 
@@ -1403,6 +1564,8 @@ UDFStoreDloc(
     Vcb->DlocList[i].Lba = Lba;
     Vcb->DlocList[i].Dloc = Dloc;
     RtlZeroMemory(Dloc, sizeof(UDF_DATALOC_INFO));
+    UDFInsertDlocLbaHash(Vcb, i);
+    UDFInsertDlocPtrHash(Vcb, i);
     Vcb->DlocFreeHint = (ULONG)i + 1;
     Dloc->LinkedFileInfo = fi;
     UDFAcquireDloc(Vcb, Dloc);
@@ -1435,7 +1598,11 @@ UDFRemoveDloc(
     }
     // remove from cache
     ASSERT(Vcb->DlocList);
+    UDFRemoveDlocLbaHash(Vcb, i);
+    UDFRemoveDlocPtrHash(Vcb, i);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+    Vcb->DlocList[i].LbaHashNext = (ULONG)-1;
+    Vcb->DlocList[i].DlocHashNext = (ULONG)-1;
     Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
     UDFReleaseDirectoryFECheckpoint(Vcb, Dloc);
@@ -1465,7 +1632,11 @@ UDFUnlinkDloc(
     }
     // remove from cache
     ASSERT(Vcb->DlocList);
+    UDFRemoveDlocLbaHash(Vcb, i);
+    UDFRemoveDlocPtrHash(Vcb, i);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+    Vcb->DlocList[i].LbaHashNext = (ULONG)-1;
+    Vcb->DlocList[i].DlocHashNext = (ULONG)-1;
     Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
     return STATUS_SUCCESS;
@@ -1492,7 +1663,11 @@ UDFFreeDloc(
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
         ASSERT(Vcb->DlocList);
+        UDFRemoveDlocLbaHash(Vcb, i);
+        UDFRemoveDlocPtrHash(Vcb, i);
         RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+        Vcb->DlocList[i].LbaHashNext = (ULONG)-1;
+        Vcb->DlocList[i].DlocHashNext = (ULONG)-1;
         Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     }
     UDFReleaseResource(&(Vcb->DlocResource));
@@ -1516,7 +1691,9 @@ UDFRelocateDloc(
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
         ASSERT(Vcb->DlocList);
+        UDFRemoveDlocLbaHash(Vcb, i);
         Vcb->DlocList[i].Lba = NewLba;
+        UDFInsertDlocLbaHash(Vcb, i);
     }
     UDFReleaseResource(&(Vcb->DlocResource));
 
@@ -1539,9 +1716,13 @@ UDFReleaseDlocList(
         }
     }
     MyFreePool__(Vcb->DlocList);
+    MyFreePool__(Vcb->DlocLbaHash);
+    MyFreePool__(Vcb->DlocPtrHash);
     Vcb->DlocList = NULL;
     Vcb->DlocCount = 0;
     Vcb->DlocFreeHint = 0;
+    Vcb->DlocLbaHash = NULL;
+    Vcb->DlocPtrHash = NULL;
     UDFReleaseResource(&(Vcb->DlocResource));
 } // end UDFReleaseDlocList()
 
@@ -1614,4 +1795,3 @@ UDFInsertLinkedFile(
     fi->PrevLinkedFile->NextLinkedFile = fi;
     return;
 } // end UDFInsertLinkedFile()
-

@@ -559,7 +559,7 @@ UDFSetDirNdxShortName(
     RtlUpcaseUnicodeString(&Upcased, ShortName, FALSE);
     RtlCopyMemory(DirNdx->ShortName, Upcased.Buffer, Upcased.Length);
     DirNdx->ShortNameLength = (uint8)Upcased.Length;
-    DirNdx->hashes.hDos = crc32((uint8*)Upcased.Buffer, Upcased.Length);
+    DirNdx->hashes.hDos = UDFHashUnicodeString(&Upcased);
     DirNdx->FI_Flags |= UDF_FI_FLAG_SHORT_NAME;
     DirNdx->FI_Flags &= ~UDF_FI_FLAG_DOS;
 }
@@ -609,7 +609,7 @@ UDFShortNameInUse(
     Upcased.Length = 0;
     Upcased.MaximumLength = sizeof(UpcasedBuffer);
     RtlUpcaseUnicodeString(&Upcased, Candidate, FALSE);
-    Hash = crc32((uint8*)Upcased.Buffer, Upcased.Length);
+    Hash = UDFHashUnicodeString(&Upcased);
 
     if (!UDFDirIndexInitScan(DirInfo, &ScanContext, 2))
         return FALSE;
@@ -674,7 +674,7 @@ UDFGenerateUniqueShortName(
         Upcased.Length = 0;
         Upcased.MaximumLength = sizeof(UpcasedBuffer);
         RtlUpcaseUnicodeString(&Upcased, &Candidate, FALSE);
-        Hashes[i] = crc32((uint8*)Upcased.Buffer, Upcased.Length);
+        Hashes[i] = UDFHashUnicodeString(&Upcased);
         Used[i] = FALSE;
         Count++;
     }
