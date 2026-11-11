@@ -1252,10 +1252,29 @@ UDFFindMinSuitableExtent(
     if ((AllocFlags & EXTENT_FLAG_IGNORE_HINT) ||
         hint < lbnStart || hint >= lbnLim) {
         hint = lbnStart;
-    } else if (
-        hint > lbnStart && _bitmap_freebit(0)) {
-        while ( hint > lbnStart && _bitmap_freebit(1)) {
-            hint--;
+    } else if (hint > lbnStart) {
+        if (Vcb->BitmapFcb) {
+            ULONG bit = hint;
+
+            while (bit > lbnStart) {
+                ULONG pageStart, lowerBound;
+
+                UDFPinBitmapPage(Vcb, bit - 1);
+                pageStart = Vcb->BitmapPageStartLbn;
+                lowerBound = max(pageStart, lbnStart);
+                while (bit > lowerBound &&
+                       RtlCheckBit(&Vcb->BitmapRtl,
+                                   bit - 1 - pageStart)) {
+                    bit--;
+                }
+                if (bit > lowerBound)
+                    break;
+            }
+            hint = bit;
+        } else if (_bitmap_freebit(0)) {
+            while (hint > lbnStart && _bitmap_freebit(1)) {
+                hint--;
+            }
         }
     }
 #undef _bitmap_freebit
