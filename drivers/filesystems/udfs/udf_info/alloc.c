@@ -2003,11 +2003,10 @@ UDFGetPartFreeSpace(
         return Vcb->MetadataFreeCount;
 
     if (Vcb->BitmapFcb) {
-        // Even the readers should be exclusive because the pinned page is shared state.
-        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
-        // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
+        // The pinned page is shared state, so protect each page separately.
         ULONG pos = 0;
         while (pos < Vcb->FSBM_BitCount) {
+            UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
             UDFPinBitmapPage(Vcb, pos);
             ULONG bits = Vcb->BitmapPageBitCount;
             ULONG startLbn = Vcb->BitmapPageStartLbn;
@@ -2016,13 +2015,15 @@ UDFGetPartFreeSpace(
             if (bufWords * 4 > Vcb->BitmapPinnedLength) {
                 UDFPrint(("UDF BM: FreeSpace OVERFLOW pos=%x bits=%x need=%x pinLen=%x pinOff=%x\n",
                     pos, bits, bufWords * 4, Vcb->BitmapPinnedLength, Vcb->BitmapPinnedOffset));
+                UDFUnpinBitmapPage(Vcb);
+                UDFReleaseResource(&(Vcb->BitMapResource1));
                 break;
             }
             s += RtlNumberOfSetBits(&Vcb->BitmapRtl);
             pos = startLbn + bits;
+            UDFUnpinBitmapPage(Vcb);
+            UDFReleaseResource(&(Vcb->BitMapResource1));
         }
-        UDFUnpinBitmapPage(Vcb);
-        UDFReleaseResource(&(Vcb->BitMapResource1));
     } else if (Vcb->FSBM_Bitmap) {
         PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
         ULONG lim = (Vcb->FSBM_BitCount+7)/8;
