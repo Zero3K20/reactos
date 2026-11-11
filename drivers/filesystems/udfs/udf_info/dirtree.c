@@ -355,6 +355,20 @@ UDFDirIndexScan(
 /*
     This routine calculates hashes for directory search
  */
+/* Hash case-folded characters; exact name comparisons handle collisions. */
+uint32
+UDFHashUnicodeString(
+    IN PUNICODE_STRING Name
+    )
+{
+    uint32 Hash = 0;
+    ULONG i;
+
+    for (i = 0; i < Name->Length / sizeof(WCHAR); i++)
+        Hash = UDFHashCharacter(Hash, RtlDowncaseUnicodeChar(Name->Buffer[i]));
+    return Hash;
+}
+
 uint8
 UDFBuildHashEntry(
     IN PVCB Vcb,
@@ -377,7 +391,7 @@ UDFBuildHashEntry(
     }
 
     if (Mask & HASH_POSIX)
-        hashes->hPosix = crc32((uint8*)(Name->Buffer), Name->Length);
+        hashes->hPosix = UDFHashUnicodeString(Name);
 
     if (Mask & HASH_ULFN) {
 
@@ -386,7 +400,7 @@ UDFBuildHashEntry(
         UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
 
         RtlUpcaseUnicodeString(&UName, Name, FALSE);
-        hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
+        hashes->hLfn = UDFHashUnicodeString(&UName);
         ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
     }
 
@@ -400,7 +414,7 @@ UDFBuildHashEntry(
             UName.MaximumLength = sizeof(ShortNameBuffer);
             if (Name->Length <= UName.MaximumLength) {
                 RtlUpcaseUnicodeString(&UName, Name, FALSE);
-                hashes->hDos = crc32((uint8*)(UName.Buffer), UName.Length);
+                hashes->hDos = UDFHashUnicodeString(&UName);
             }
             RetFlags |= UDF_FI_FLAG_DOS;
         }
@@ -1243,13 +1257,9 @@ UDFHashDlocLba(
     IN ULONG Count
     )
 {
-    ULONG Hash = Lba;
+    ULONG Hash = UDFHashCharacter(0, Lba & 0xffff);
 
-    Hash ^= Hash >> 16;
-    Hash *= 0x7feb352d;
-    Hash ^= Hash >> 15;
-    Hash *= 0x846ca68b;
-    Hash ^= Hash >> 16;
+    Hash = UDFHashCharacter(Hash, Lba >> 16);
     return Hash % Count;
 }
 
@@ -1261,15 +1271,15 @@ UDFHashDlocPtr(
 {
     ULONG_PTR Hash = (ULONG_PTR)Dloc;
 
+    ULONG Value = (ULONG)Hash;
+    ULONG Result = UDFHashCharacter(0, Value & 0xffff);
+    Result = UDFHashCharacter(Result, Value >> 16);
 #if defined(_WIN64)
-    Hash ^= Hash >> 32;
+    Value = (ULONG)(Hash >> 32);
+    Result = UDFHashCharacter(Result, Value & 0xffff);
+    Result = UDFHashCharacter(Result, Value >> 16);
 #endif
-    Hash ^= Hash >> 16;
-    Hash *= 0x7feb352d;
-    Hash ^= Hash >> 15;
-    Hash *= 0x846ca68b;
-    Hash ^= Hash >> 16;
-    return (ULONG)Hash % Count;
+    return Result % Count;
 }
 
 static VOID

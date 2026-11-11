@@ -19,6 +19,7 @@ list(APPEND SOURCE
     dirappend.c
     metabatch.c
     udf_info/fe_batch.c
+    udf_info/udf_hash.h
     dircntrl.c
     fastio.c
     fileinfo.c

@@ -72,6 +72,7 @@ uint8    UDFBuildHashEntry(IN PVCB Vcb,
                            IN PUNICODE_STRING Name,
                           OUT PHASH_ENTRY hashes,
                            IN uint8 Mask);
+uint32   UDFHashUnicodeString(IN PUNICODE_STRING Name);
 
 #define HASH_POSIX 0x01
 #define HASH_ULFN  0x02
@@ -1118,9 +1119,6 @@ UDFUpdateVolIdent(
     IN PUNICODE_STRING VolIdent
     );
 
-uint32
-__fastcall crc32(IN uint8* s,
-            IN uint32 len);
 // calculate a 16-bit CRC checksum using ITU-T V.41 polynomial
 uint16 __fastcall UDFCrc(IN uint8 *Data, IN SIZE_T Size, IN uint16 Crc);
 
