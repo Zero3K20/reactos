@@ -5,8 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
+#define WIN32_NO_STATUS
 #include <windows.h>
-#include <winternl.h>
+#define NTOS_MODE_USER
+#include <ndk/ntndk.h>
 
 #define DEFAULT_FILE_COUNT 100
 #define DEFAULT_FILE_SIZE 4096
