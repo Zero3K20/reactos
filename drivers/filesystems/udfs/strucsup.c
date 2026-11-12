@@ -143,6 +143,9 @@ Return Value:
     //  synchronization objects.
 
     FcbNonpaged = UDFAllocateFcbNonpaged();
+    if (!FcbNonpaged) {
+        return NULL;
+    }
 
     RtlZeroMemory(FcbNonpaged, sizeof(struct FCB_NONPAGED));
 
@@ -830,6 +833,9 @@ Return Value:
             case UDF_NODE_TYPE_INDEX:
 
                 NewFcb = UDFAllocateFcbIndex();
+                if (!NewFcb) {
+                    _SEH2_LEAVE;
+                }
 
                 RtlZeroMemory(NewFcb, SIZEOF_FCB_INDEX);
 
@@ -840,6 +846,9 @@ Return Value:
             case UDF_NODE_TYPE_DATA:
 
                 NewFcb = UDFAllocateFcbData();
+                if (!NewFcb) {
+                    _SEH2_LEAVE;
+                }
 
                 RtlZeroMemory(NewFcb, SIZEOF_FCB_DATA);
 
@@ -868,6 +877,17 @@ Return Value:
             //  Now create the non-paged section object.
 
             NewFcb->FcbNonpaged = UDFCreateFcbNonpaged(IrpContext);
+            if (!NewFcb->FcbNonpaged) {
+
+                if (NodeTypeCode == UDF_NODE_TYPE_INDEX) {
+                    UDFDeallocateFcbIndex(NewFcb);
+                } else {
+                    UDFDeallocateFcbData(NewFcb);
+                }
+
+                NewFcb = NULL;
+                _SEH2_LEAVE;
+            }
 
             *FcbExisted = FALSE;
 
