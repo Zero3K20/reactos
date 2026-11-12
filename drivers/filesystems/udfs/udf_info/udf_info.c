@@ -4997,8 +4997,12 @@ retry_load_vat:
         return status;
     }
     len = (uint32)UDFGetFileSize(VatFileInfo);
+    if (len < sizeof(struct VirtualAllocationTable15)) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat_15;
+    }
     if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
-        // load Vat 1.50 header
+        // load VAT 1.50 header
         UDFPrint(("Load VAT 1.50\n"));
         struct VirtualAllocationTable15* Buf;
         if (((icbtag*)(VatFileInfo->Dloc->FileEntry+1))->fileType != UDF_FILE_TYPE_VAT15) {
@@ -5037,26 +5041,41 @@ err_vat_15:
             status = STATUS_FILE_CORRUPT_ERROR;
             goto err_vat_15;
         }
+        if (len < sizeof(*Buf)) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat_15;
+        }
         Buf = (struct VirtualAllocationTable20*)MyAllocatePool__(NonPagedPool, sizeof(struct VirtualAllocationTable20));
         if (!Buf) goto err_vat_15_2;
+        status = UDFReadFile__(IrpContext, Vcb, VatFileInfo, 0, sizeof(*Buf), FALSE, (int8*)Buf);
+        if (!NT_SUCCESS(status)) {
+            MyFreePool__(Buf);
+            goto err_vat_15;
+        }
+        if (Buf->lengthHeader < sizeof(*Buf) || Buf->lengthHeader > len) {
+            MyFreePool__(Buf);
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat_15;
+        }
         Offset = Buf->lengthHeader;
         to_read = len - Offset;
         hdrOffset = 0;
-        MyFreePool__(Buf);
-
-        //TODO: Read VirtualAllocationTable20
-        //TODO: fix Use-After-Free
-
         Vcb->minUDFReadRev  = Buf->minReadRevision;
         Vcb->minUDFWriteRev = Buf->minWriteRevision;
         Vcb->maxUDFWriteRev = Buf->maxWriteRevision;
 
         Vcb->numFiles = Buf->numFIDSFiles;
         Vcb->numDirs  = Buf->numFIDSDirectories;
+        MyFreePool__(Buf);
 
     } else {
         // unknown (or wrong) VAT format
         UDFPrint(("unknown (or wrong) VAT format\n"));
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat_15;
+    }
+    if (Vcb->FSBM_BitCount > MAXULONG / sizeof(uint32) ||
+        to_read > Vcb->FSBM_BitCount * sizeof(uint32)) {
         status = STATUS_FILE_CORRUPT_ERROR;
         goto err_vat_15;
     }
@@ -6992,8 +7011,8 @@ UDFRecordVAT(
     uint32 i;
     PEXTENT_MAP Mapping;
     uint32 off, BS, NWA;
-    int8* Old;
-    int8* New;
+    int8* Old = NULL;
+    int8* New = NULL;
     uint32* Vat;
     uint8 AllocMode;
     uint32 VatLen;
@@ -7035,8 +7054,7 @@ UDFRecordVAT(
     status = UDFReadFile__(IrpContext, Vcb, VatFileInfo, 0, OldLen, FALSE, Old);
     if (!NT_SUCCESS(status)) {
         DbgFreePool(Vat);
-        DbgFreePool(Old);
-        return status;
+        goto cleanup;
     }
     // prepare some pointers
     // and fill headers
@@ -7049,7 +7067,8 @@ UDFRecordVAT(
         New = (int8*)DbgAllocatePool(PagedPool, VatLen + hdrLen);
         if (!New) {
             DbgFreePool(Vat);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto cleanup;
         }
         RtlCopyMemory(New+hdrOffsetNew, Old+hdrOffset, hdrLen);
         ((struct VirtualAllocationTable15*)(New + hdrOffset))->previousVATICB =
@@ -7073,7 +7092,8 @@ UDFRecordVAT(
         New = (int8*)DbgAllocatePool(PagedPool, VatLen + hdrLen);
         if (!New) {
             DbgFreePool(Vat);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto cleanup;
         }
         RtlCopyMemory(New+hdrOffsetNew, Old+hdrOffset, hdrLen);
         ((struct VirtualAllocationTable20*)New)->previousVatICBLoc =
@@ -7114,9 +7134,8 @@ UDFRecordVAT(
     // of the data from FE. That's why we should remember PacketOffset now
     if (to_read < VatLen) {
         status = UDFResizeFile__(IrpContext, Vcb, VatFileInfo, len = hdrLen + VatLen);
-        if (!NT_SUCCESS(status)) {
-            return status;
-        }
+        if (!NT_SUCCESS(status))
+            goto cleanup;
         UDFMarkSpaceAsXXX(Vcb, VatFileInfo->Dloc, VatFileInfo->Dloc->DataLoc.Mapping, AS_DISCARDED); //free
     }
     //PacketOffset = WCacheGetWriteBlockCount__(&(Vcb->FastCache));
@@ -7143,12 +7162,13 @@ UDFRecordVAT(
         if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &WrittenBytes))) {
             status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
         }
-        return status;
+        goto cleanup;
     }
     // We can't fit the whole VAT in FE tail
     // Now lets 'unpack' VAT's mapping to make updating easier
     status = UDFUnPackMapping(Vcb, &(VatFileInfo->Dloc->DataLoc));
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status))
+        goto cleanup;
     // update VAT with locations of not flushed blocks
     if (PacketOffset) {
         Vcb->Vat = (uint32*)(New+Offset);
@@ -7174,7 +7194,7 @@ UDFRecordVAT(
             }
             status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, off, to_read, FALSE, New+off, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
-                return status;
+                goto cleanup;
             }
         }
         VatLen-=BS;
@@ -7198,7 +7218,8 @@ UDFRecordVAT(
 //            break;
     }
     default: {
-        return STATUS_INVALID_PARAMETER;
+        status = STATUS_INVALID_PARAMETER;
+        goto cleanup;
     }
     }
     // calculate actual AllocSequence length (in blocks)
@@ -7209,7 +7230,10 @@ UDFRecordVAT(
     if (VatFileInfo->Dloc->AllocLoc.Mapping) MyFreePool__(VatFileInfo->Dloc->AllocLoc.Mapping);
     VatFileInfo->Dloc->AllocLoc.Mapping = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool , (len+1)*sizeof(EXTENT_MAP),
                                                        MEM_EXTMAP_TAG);
-    if (!(VatFileInfo->Dloc->AllocLoc.Mapping)) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!(VatFileInfo->Dloc->AllocLoc.Mapping)) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto cleanup;
+    }
 
     VatFileInfo->Dloc->AllocLoc.Offset = (uint32)(VatFileInfo->Dloc->FELoc.Length);
     VatFileInfo->Dloc->AllocLoc.Length = 0;
@@ -7249,9 +7273,14 @@ UDFRecordVAT(
 
     status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
     if (!NT_SUCCESS(status))
-        return status;
+        goto cleanup;
 
-    return STATUS_SUCCESS;
+cleanup:
+    if (New)
+        DbgFreePool(New);
+    if (Old)
+        DbgFreePool(Old);
+    return status;
 } // end UDFRecordVAT()
 
 /*
